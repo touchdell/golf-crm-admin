@@ -8,7 +8,8 @@ export interface Member {
   phone?: string;
   email?: string;
   address?: string;
-  membershipType: string;
+  membershipType: string; // Code (for backward compatibility)
+  membershipTypeName?: string; // Name (for display)
   membershipStatus: string;
   startDate?: string;
   endDate?: string;
@@ -97,8 +98,10 @@ const getMembershipTypeId = async (code: string): Promise<number | null> => {
 };
 
 // Helper function to map database row to Member interface
-const mapDbRowToMember = async (row: DbMemberRow): Promise<Member> => {
-  const membershipTypeCode = await getMembershipTypeCode(row.membership_type_id);
+const mapDbRowToMember = async (row: DbMemberRow & { membership_types?: { code: string; name: string } }): Promise<Member> => {
+  // If membership_types is joined, use it directly
+  const membershipTypeCode = row.membership_types?.code || await getMembershipTypeCode(row.membership_type_id);
+  const membershipTypeName = row.membership_types?.name;
   
   return {
     id: row.id,
@@ -109,6 +112,7 @@ const mapDbRowToMember = async (row: DbMemberRow): Promise<Member> => {
     email: row.email || undefined,
     address: row.address || undefined,
     membershipType: membershipTypeCode,
+    membershipTypeName: membershipTypeName,
     membershipStatus: row.membership_status,
     startDate: row.start_date || undefined,
     endDate: row.end_date || undefined,
@@ -183,7 +187,13 @@ export const getMembers = async (
   try {
     let query = supabase
       .from('members')
-      .select('*', { count: 'exact' });
+      .select(`
+        *,
+        membership_types (
+          code,
+          name
+        )
+      `, { count: 'exact' });
 
     // Apply search filter
     if (search) {
@@ -231,7 +241,13 @@ export const getMemberById = async (id: number): Promise<Member | null> => {
   try {
     const { data, error } = await supabase
       .from('members')
-      .select('*')
+      .select(`
+        *,
+        membership_types (
+          code,
+          name
+        )
+      `)
       .eq('id', id)
       .single();
 

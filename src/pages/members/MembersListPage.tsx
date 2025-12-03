@@ -134,7 +134,7 @@ const MembersListPage: React.FC = () => {
                         </TableCell>
                         <TableCell>{m.phone || '-'}</TableCell>
                         <TableCell>{m.email || '-'}</TableCell>
-                        <TableCell>{m.membershipType}</TableCell>
+                        <TableCell>{m.membershipTypeName || m.membershipType}</TableCell>
                         <TableCell>
                           <Chip
                             label={m.membershipStatus}
