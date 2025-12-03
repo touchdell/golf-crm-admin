@@ -35,14 +35,10 @@ import dayjs from 'dayjs';
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
   const today = dayjs().format('YYYY-MM-DD');
-  const startOfMonth = dayjs().startOf('month').format('YYYY-MM-DD');
   const thirtyDaysAgo = dayjs().subtract(30, 'days').format('YYYY-MM-DD');
 
-  // Fetch today's summary
-  const { data: todayReport, isLoading: todayLoading, isError: todayError } = useSummaryReport(today, today);
-  
-  // Fetch last 30 days summary
-  const { data: monthlyReport, isLoading: monthlyLoading, isError: monthlyError } = useSummaryReport(startOfMonth, today);
+  // Fetch summary report (includes today and monthly data)
+  const { data: summaryReport, isLoading: summaryLoading, isError: summaryError } = useSummaryReport();
   
   // Fetch daily bookings for chart (last 30 days)
   const { data: dailyBookingsData, isLoading: chartLoading } = useDailyBookings(thirtyDaysAgo, today);
@@ -63,8 +59,8 @@ const DashboardPage: React.FC = () => {
     revenue: item.revenue,
   })) || [];
 
-  const isLoading = todayLoading || monthlyLoading || chartLoading;
-  const isError = todayError || monthlyError;
+  const isLoading = summaryLoading || chartLoading;
+  const isError = summaryError;
 
   if (isLoading) {
     return (
@@ -74,7 +70,7 @@ const DashboardPage: React.FC = () => {
     );
   }
 
-  if (isError || !todayReport || !monthlyReport) {
+  if (isError || !summaryReport) {
     return (
       <Box>
         <Typography variant="h5" gutterBottom>
@@ -101,7 +97,7 @@ const DashboardPage: React.FC = () => {
                   <Typography color="text.secondary" gutterBottom variant="body2">
                     Today's Bookings
                   </Typography>
-                  <Typography variant="h4">{todayReport.todayBookings}</Typography>
+                  <Typography variant="h4">{summaryReport.todayBookings}</Typography>
                 </Box>
                 <CalendarToday sx={{ fontSize: 40, color: 'primary.main', opacity: 0.3 }} />
               </Box>
@@ -117,7 +113,7 @@ const DashboardPage: React.FC = () => {
                   <Typography color="text.secondary" gutterBottom variant="body2">
                     Today's Revenue
                   </Typography>
-                  <Typography variant="h4">{formatCurrency(todayReport.todayRevenue)}</Typography>
+                  <Typography variant="h4">{formatCurrency(summaryReport.todayRevenue)}</Typography>
                 </Box>
                 <AttachMoney sx={{ fontSize: 40, color: 'success.main', opacity: 0.3 }} />
               </Box>
@@ -133,7 +129,7 @@ const DashboardPage: React.FC = () => {
                   <Typography color="text.secondary" gutterBottom variant="body2">
                     Active Members
                   </Typography>
-                  <Typography variant="h4">{todayReport.activeMembers}</Typography>
+                  <Typography variant="h4">{summaryReport.activeMembers}</Typography>
                 </Box>
                 <People sx={{ fontSize: 40, color: 'info.main', opacity: 0.3 }} />
               </Box>
@@ -149,7 +145,7 @@ const DashboardPage: React.FC = () => {
                   <Typography color="text.secondary" gutterBottom variant="body2">
                     This Month's Revenue
                   </Typography>
-                  <Typography variant="h4">{formatCurrency(monthlyReport.monthlyRevenue)}</Typography>
+                  <Typography variant="h4">{formatCurrency(summaryReport.monthlyRevenue)}</Typography>
                 </Box>
                 <TrendingUp sx={{ fontSize: 40, color: 'warning.main', opacity: 0.3 }} />
               </Box>
@@ -249,11 +245,11 @@ const DashboardPage: React.FC = () => {
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                 <Typography color="text.secondary">Total Bookings</Typography>
-                <Typography variant="h6">{monthlyReport.totalBookings}</Typography>
+                <Typography variant="h6">{summaryReport.totalBookings}</Typography>
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                 <Typography color="text.secondary">Total Revenue</Typography>
-                <Typography variant="h6">{formatCurrency(monthlyReport.totalRevenue)}</Typography>
+                <Typography variant="h6">{formatCurrency(summaryReport.totalRevenue)}</Typography>
               </Box>
             </Box>
           </Paper>

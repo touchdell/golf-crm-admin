@@ -4,17 +4,19 @@ import { Box, Typography, Paper, Button } from '@mui/material';
 import { ArrowBack } from '@mui/icons-material';
 import MemberForm from '../../components/MemberForm';
 import { useCreateMember } from '../../hooks/useMembers';
-import type { CreateMemberRequest } from '../../services/memberService';
+import type { CreateMemberRequest, UpdateMemberRequest } from '../../services/memberService';
 
 const CreateMemberPage: React.FC = () => {
   const navigate = useNavigate();
   const createMemberMutation = useCreateMember();
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (values: CreateMemberRequest) => {
+  const handleSubmit = async (values: CreateMemberRequest | UpdateMemberRequest) => {
+    // Type guard to ensure we have CreateMemberRequest
+    const createValues = values as CreateMemberRequest;
     try {
       setError(null);
-      await createMemberMutation.mutateAsync(values);
+      await createMemberMutation.mutateAsync(createValues);
       navigate('/members');
     } catch (err: any) {
       setError(err?.message || 'Failed to create member');

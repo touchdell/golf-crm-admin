@@ -1,4 +1,4 @@
-import { apiClient } from './apiClient';
+import { supabase } from '../lib/supabase';
 
 export type PriceCategory = 'GREEN_FEE' | 'CART' | 'CADDY' | 'OTHER';
 
@@ -32,61 +32,58 @@ export interface UpdatePriceItemRequest {
   isActive?: boolean;
 }
 
-// Mutable dummy data store for development
-const dummyPriceItems: PriceItem[] = [
-  {
-    id: 1,
-    code: 'GF_WEEKDAY',
-    name: 'Weekday Green Fee',
-    description: 'Green fee for weekday play',
-    unitPrice: 50.0,
-    currency: 'USD',
-    isActive: true,
-    category: 'GREEN_FEE',
-  },
-  {
-    id: 2,
-    code: 'GF_WEEKEND',
-    name: 'Weekend Green Fee',
-    description: 'Green fee for weekend play',
-    unitPrice: 75.0,
-    currency: 'USD',
-    isActive: true,
-    category: 'GREEN_FEE',
-  },
-  {
-    id: 3,
-    code: 'CART_18',
-    name: 'Golf Cart (18 holes)',
-    description: 'Cart rental for 18 holes',
-    unitPrice: 25.0,
-    currency: 'USD',
-    isActive: true,
-    category: 'CART',
-  },
-  {
-    id: 4,
-    code: 'CADDY_STANDARD',
-    name: 'Standard Caddy',
-    description: 'Standard caddy service',
-    unitPrice: 40.0,
-    currency: 'USD',
-    isActive: true,
-    category: 'CADDY',
-  },
-];
+// Database row interface
+interface DbPriceItemRow {
+  id: number;
+  code: string;
+  name: string;
+  description?: string | null;
+  unit_price: number;
+  currency: string;
+  is_active: boolean;
+  category: string;
+}
+
+// Helper function to map database row to PriceItem interface
+const mapDbRowToPriceItem = (row: DbPriceItemRow): PriceItem => {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    description: row.description || undefined,
+    unitPrice: Number(row.unit_price),
+    currency: row.currency,
+    isActive: row.is_active,
+    category: row.category as PriceCategory,
+  };
+};
+
+// Helper function to map PriceItem to database row
+const mapPriceItemToDbRow = (item: CreatePriceItemRequest | UpdatePriceItemRequest) => {
+  const row: Record<string, unknown> = {};
+  if ('code' in item && item.code !== undefined) row.code = item.code;
+  if ('name' in item && item.name !== undefined) row.name = item.name;
+  if ('description' in item) row.description = item.description || null;
+  if ('unitPrice' in item && item.unitPrice !== undefined) row.unit_price = item.unitPrice;
+  if ('currency' in item && item.currency !== undefined) row.currency = item.currency;
+  if ('category' in item && item.category !== undefined) row.category = item.category;
+  if ('isActive' in item && item.isActive !== undefined) row.is_active = item.isActive;
+  return row;
+};
 
 export const getPriceItems = async (): Promise<PriceItem[]> => {
   try {
-    const res = await apiClient.get<PriceItem[]>('/settings/prices');
-    // Ensure response is an array
-    if (Array.isArray(res.data)) {
-      return res.data;
-    }
-    throw new Error('Invalid response format');
-  } catch {
-    // Fallback to dummy data for development
-    return [...dummyPriceItems];
+    const { data, error } = await supabase
+      .from('price_items')
+      .select('*')
+      .order('id', { ascending: true });
+
+    if (error) throw error;
+
+    return (data || []).map(mapDbRowToPriceItem);
+  } catch (error) {
+    console.error('Error fetching price items:', error);
+    return [];
   }
 };
 
@@ -94,17 +91,21 @@ export const createPriceItem = async (
   data: CreatePriceItemRequest,
 ): Promise<PriceItem> => {
   try {
-    const res = await apiClient.post<PriceItem>('/settings/prices', data);
-    return res.data;
+    const dbRow = mapPriceItemToDbRow({ ...data, isActive: true });
+
+    const { data: created, error } = await supabase
+      .from('price_items')
+      .insert(dbRow)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!created) throw new Error('Failed to create price item');
+
+    return mapDbRowToPriceItem(created);
   } catch (error) {
-    // Fallback for development - add to dummy data
-    const newItem: PriceItem = {
-      id: Date.now(),
-      ...data,
-      isActive: true,
-    };
-    dummyPriceItems.push(newItem);
-    return newItem;
+    console.error('Error creating price item:', error);
+    throw error;
   }
 };
 
@@ -113,20 +114,22 @@ export const updatePriceItem = async (
   data: UpdatePriceItemRequest,
 ): Promise<PriceItem> => {
   try {
-    const res = await apiClient.put<PriceItem>(`/settings/prices/${id}`, data);
-    return res.data;
+    const dbRow = mapPriceItemToDbRow(data);
+
+    const { data: updated, error } = await supabase
+      .from('price_items')
+      .update(dbRow)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!updated) throw new Error('Price item not found');
+
+    return mapDbRowToPriceItem(updated);
   } catch (error) {
-    // Fallback for development - update dummy data
-    const itemIndex = dummyPriceItems.findIndex((item) => item.id === id);
-    if (itemIndex === -1) {
-      throw new Error('Price item not found');
-    }
-    const updatedItem = {
-      ...dummyPriceItems[itemIndex],
-      ...data,
-    };
-    dummyPriceItems[itemIndex] = updatedItem;
-    return updatedItem;
+    console.error('Error updating price item:', error);
+    throw error;
   }
 };
 
@@ -139,13 +142,14 @@ export const togglePriceItemActive = async (
 
 export const deletePriceItem = async (id: number): Promise<void> => {
   try {
-    await apiClient.delete(`/settings/prices/${id}`);
+    const { error } = await supabase
+      .from('price_items')
+      .delete()
+      .eq('id', id);
+
+    if (error) throw error;
   } catch (error) {
-    // Fallback for development - remove from dummy data
-    const itemIndex = dummyPriceItems.findIndex((item) => item.id === id);
-    if (itemIndex !== -1) {
-      dummyPriceItems.splice(itemIndex, 1);
-    }
+    console.error('Error deleting price item:', error);
+    throw error;
   }
 };
-

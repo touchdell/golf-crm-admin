@@ -1,4 +1,4 @@
-import { apiClient } from './apiClient';
+import { supabase } from '../lib/supabase';
 
 export interface SummaryReport {
   todayBookings: number;
@@ -21,89 +21,6 @@ export interface DailyBookingsResponse {
   to: string;
 }
 
-// Generate dummy summary report (amounts in THB)
-const generateDummySummaryReport = (): SummaryReport => {
-  return {
-    todayBookings: 12 + Math.floor(Math.random() * 10),
-    todayRevenue: 8500 + Math.floor(Math.random() * 5000), // THB
-    activeMembers: 245 + Math.floor(Math.random() * 50),
-    monthlyRevenue: 150000 + Math.floor(Math.random() * 50000), // THB
-    totalBookings: 1250 + Math.floor(Math.random() * 200),
-    totalRevenue: 950000 + Math.floor(Math.random() * 100000), // THB
-  };
-};
-
-// Generate dummy daily bookings (revenue in THB)
-const generateDummyDailyBookings = (from: string, to: string): DailyBooking[] => {
-  const bookings: DailyBooking[] = [];
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  
-  for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-    bookings.push({
-      date: dateStr,
-      bookings: 5 + Math.floor(Math.random() * 20),
-      revenue: 3000 + Math.floor(Math.random() * 8000), // THB
-    });
-  }
-  
-  return bookings;
-};
-
-export const getSummaryReport = async (
-  from?: string,
-  to?: string,
-): Promise<SummaryReport> => {
-  // For development: always use dummy data
-  const useDummyData = true; // Set to false when backend is ready
-  
-  if (!useDummyData) {
-    try {
-      const res = await apiClient.get<SummaryReport>('/reports/summary', {
-        params: { from, to },
-      });
-      return res.data;
-    } catch (error) {
-      console.log('API call failed, using dummy data:', error);
-    }
-  }
-  
-  // Fallback to dummy data
-  const report = generateDummySummaryReport();
-  console.log('Returning dummy summary report:', report);
-  return report;
-};
-
-export const getDailyBookings = async (
-  from: string,
-  to: string,
-): Promise<DailyBookingsResponse> => {
-  // For development: always use dummy data
-  const useDummyData = true; // Set to false when backend is ready
-  
-  if (!useDummyData) {
-    try {
-      const res = await apiClient.get<DailyBookingsResponse>('/reports/daily-bookings', {
-        params: { from, to },
-      });
-      return res.data;
-    } catch (error) {
-      console.log('API call failed, using dummy data:', error);
-    }
-  }
-  
-  // Fallback to dummy data
-  const items = generateDummyDailyBookings(from, to);
-  console.log(`Returning ${items.length} days of dummy booking data`);
-  
-  return {
-    items,
-    from,
-    to,
-  };
-};
-
 export interface DailyRevenue {
   date: string;
   revenue: number;
@@ -115,49 +32,201 @@ export interface DailyRevenueResponse {
   to: string;
 }
 
-// Generate dummy daily revenue
-const generateDummyDailyRevenue = (from: string, to: string): DailyRevenue[] => {
-  const revenue: DailyRevenue[] = [];
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  
-  for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
-    const dateStr = d.toISOString().split('T')[0];
-    revenue.push({
-      date: dateStr,
-      revenue: 5000 + Math.floor(Math.random() * 15000), // THB
-    });
+export const getSummaryReport = async (): Promise<SummaryReport> => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+      .toISOString()
+      .split('T')[0];
+
+    // Get today's bookings count
+    const { count: todayBookingsCount } = await supabase
+      .from('bookings')
+      .select('*', { count: 'exact', head: true })
+      .eq('booking_date', today)
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED']);
+
+    // Get today's revenue (sum of total_amount from bookings)
+    const { data: todayBookings } = await supabase
+      .from('bookings')
+      .select('total_amount')
+      .eq('booking_date', today)
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED']);
+
+    const todayRevenue =
+      todayBookings?.reduce((sum, b) => sum + Number(b.total_amount || 0), 0) || 0;
+
+    // Get active members count (members with ACTIVE status)
+    const { count: activeMembersCount } = await supabase
+      .from('members')
+      .select('*', { count: 'exact', head: true })
+      .eq('membership_status', 'ACTIVE');
+
+    // Get monthly revenue (sum of total_amount from bookings this month)
+    const { data: monthlyBookings } = await supabase
+      .from('bookings')
+      .select('total_amount')
+      .gte('booking_date', startOfMonth)
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED']);
+
+    const monthlyRevenue =
+      monthlyBookings?.reduce((sum, b) => sum + Number(b.total_amount || 0), 0) || 0;
+
+    // Get total bookings count
+    const { count: totalBookingsCount } = await supabase
+      .from('bookings')
+      .select('*', { count: 'exact', head: true })
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED']);
+
+    // Get total revenue (sum of all bookings)
+    const { data: allBookings } = await supabase
+      .from('bookings')
+      .select('total_amount')
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED']);
+
+    const totalRevenue =
+      allBookings?.reduce((sum, b) => sum + Number(b.total_amount || 0), 0) || 0;
+
+    return {
+      todayBookings: todayBookingsCount || 0,
+      todayRevenue,
+      activeMembers: activeMembersCount || 0,
+      monthlyRevenue,
+      totalBookings: totalBookingsCount || 0,
+      totalRevenue,
+    };
+  } catch (error) {
+    console.error('Error fetching summary report:', error);
+    // Return zeros on error
+    return {
+      todayBookings: 0,
+      todayRevenue: 0,
+      activeMembers: 0,
+      monthlyRevenue: 0,
+      totalBookings: 0,
+      totalRevenue: 0,
+    };
   }
-  
-  return revenue;
+};
+
+export const getDailyBookings = async (
+  from: string,
+  to: string,
+): Promise<DailyBookingsResponse> => {
+  try {
+    // Get all bookings in date range
+    const { data: bookings, error } = await supabase
+      .from('bookings')
+      .select('booking_date, total_amount')
+      .gte('booking_date', from)
+      .lte('booking_date', to)
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED'])
+      .order('booking_date', { ascending: true });
+
+    if (error) throw error;
+
+    // Group by date
+    const dailyMap = new Map<string, { bookings: number; revenue: number }>();
+
+    // Initialize all dates in range with zeros
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      dailyMap.set(dateStr, { bookings: 0, revenue: 0 });
+    }
+
+    // Aggregate bookings by date
+    if (bookings) {
+      for (const booking of bookings) {
+        const date = booking.booking_date;
+        const existing = dailyMap.get(date) || { bookings: 0, revenue: 0 };
+        dailyMap.set(date, {
+          bookings: existing.bookings + 1,
+          revenue: existing.revenue + Number(booking.total_amount || 0),
+        });
+      }
+    }
+
+    // Convert map to array
+    const items: DailyBooking[] = Array.from(dailyMap.entries())
+      .map(([date, data]) => ({
+        date,
+        bookings: data.bookings,
+        revenue: data.revenue,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    return {
+      items,
+      from,
+      to,
+    };
+  } catch (error) {
+    console.error('Error fetching daily bookings:', error);
+    return {
+      items: [],
+      from,
+      to,
+    };
+  }
 };
 
 export const getDailyRevenue = async (
   from: string,
   to: string,
 ): Promise<DailyRevenueResponse> => {
-  // For development: always use dummy data
-  const useDummyData = true; // Set to false when backend is ready
-  
-  if (!useDummyData) {
-    try {
-      const res = await apiClient.get<DailyRevenueResponse>('/reports/daily-revenue', {
-        params: { from, to },
-      });
-      return res.data;
-    } catch (error) {
-      console.log('API call failed, using dummy data:', error);
-    }
-  }
-  
-  // Fallback to dummy data
-  const items = generateDummyDailyRevenue(from, to);
-  console.log(`Returning ${items.length} days of dummy revenue data`);
-  
-  return {
-    items,
-    from,
-    to,
-  };
-};
+  try {
+    // Get all bookings in date range with total_amount
+    const { data: bookings, error } = await supabase
+      .from('bookings')
+      .select('booking_date, total_amount')
+      .gte('booking_date', from)
+      .lte('booking_date', to)
+      .in('status', ['PENDING', 'CONFIRMED', 'COMPLETED'])
+      .order('booking_date', { ascending: true });
 
+    if (error) throw error;
+
+    // Group by date
+    const dailyMap = new Map<string, number>();
+
+    // Initialize all dates in range with zeros
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    for (let d = new Date(fromDate); d <= toDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      dailyMap.set(dateStr, 0);
+    }
+
+    // Aggregate revenue by date
+    if (bookings) {
+      for (const booking of bookings) {
+        const date = booking.booking_date;
+        const existing = dailyMap.get(date) || 0;
+        dailyMap.set(date, existing + Number(booking.total_amount || 0));
+      }
+    }
+
+    // Convert map to array
+    const items: DailyRevenue[] = Array.from(dailyMap.entries())
+      .map(([date, revenue]) => ({
+        date,
+        revenue,
+      }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    return {
+      items,
+      from,
+      to,
+    };
+  } catch (error) {
+    console.error('Error fetching daily revenue:', error);
+    return {
+      items: [],
+      from,
+      to,
+    };
+  }
+};

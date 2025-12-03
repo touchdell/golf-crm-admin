@@ -30,6 +30,7 @@ import {
   type MembershipType,
   type CreateMembershipTypeRequest,
 } from '../../services/membershipTypeService';
+import { supabase } from '../../lib/supabase';
 
 const MembershipTypesPage: React.FC = () => {
   const [membershipTypes, setMembershipTypes] = useState<MembershipType[]>([]);
@@ -61,7 +62,49 @@ const MembershipTypesPage: React.FC = () => {
     }
   };
 
-  const handleOpenDialog = (type?: MembershipType) => {
+  // Generate code with running number (MT0001, MT0002, etc.)
+  const generateCode = async (): Promise<string> => {
+    try {
+      // Try to use Supabase RPC function if available
+      const { data, error } = await supabase.rpc('generate_membership_type_code');
+      
+      if (!error && data) {
+        return data;
+      }
+    } catch (error) {
+      console.warn('RPC function not available, using fallback:', error);
+    }
+    
+    // Fallback: Query existing codes and find next number
+    try {
+      const { data: existingCodes } = await supabase
+        .from('membership_types')
+        .select('code')
+        .like('code', 'MT%')
+        .order('code', { ascending: false });
+      
+      if (existingCodes && existingCodes.length > 0) {
+        // Extract numbers from existing codes (e.g., MT0001 -> 1)
+        const numbers = existingCodes
+          .map((item) => {
+            const match = item.code.match(/^MT(\d+)$/);
+            return match ? parseInt(match[1], 10) : 0;
+          })
+          .filter((num) => num > 0);
+        
+        const maxNumber = numbers.length > 0 ? Math.max(...numbers) : 0;
+        const nextNumber = maxNumber + 1;
+        return `MT${String(nextNumber).padStart(4, '0')}`;
+      }
+    } catch (error) {
+      console.error('Error generating code:', error);
+    }
+    
+    // Default if no existing codes or error
+    return 'MT0001';
+  };
+
+  const handleOpenDialog = async (type?: MembershipType) => {
     if (type) {
       setEditingType(type);
       setFormData({
@@ -71,8 +114,10 @@ const MembershipTypesPage: React.FC = () => {
       });
     } else {
       setEditingType(null);
+      // Auto-generate code immediately when opening dialog for new item
+      const generatedCode = await generateCode();
       setFormData({
-        code: '',
+        code: generatedCode,
         name: '',
         description: '',
       });
@@ -87,25 +132,52 @@ const MembershipTypesPage: React.FC = () => {
 
   const handleSubmit = async () => {
     try {
+      setError(null);
+      
+      // Ensure code is generated if empty (shouldn't happen, but safety check)
+      let finalCode = formData.code;
+      if (!finalCode || !finalCode.trim()) {
+        finalCode = await generateCode();
+      }
+      
+      // Validate required fields
+      if (!finalCode || !finalCode.trim()) {
+        setError('Code is required');
+        return;
+      }
+      if (!formData.name || !formData.name.trim()) {
+        setError('Name is required');
+        return;
+      }
+      
+      // Prepare data with trimmed values
+      const submitData: CreateMembershipTypeRequest = {
+        code: finalCode.trim(),
+        name: formData.name.trim(),
+        description: formData.description?.trim() || undefined,
+      };
+      
       if (editingType) {
-        await updateMembershipType(editingType.id, formData);
+        await updateMembershipType(editingType.id, submitData);
       } else {
-        await createMembershipType(formData);
+        await createMembershipType(submitData);
       }
       await loadMembershipTypes();
       handleCloseDialog();
-    } catch (err) {
-      setError('Failed to save membership type');
-      console.error(err);
+    } catch (err: any) {
+      const errorMessage = err?.message || 'Failed to save membership type';
+      setError(errorMessage);
+      console.error('Error saving membership type:', err);
     }
   };
 
   const handleToggleActive = async (type: MembershipType) => {
     try {
+      setError(null);
       await updateMembershipType(type.id, { isActive: !type.isActive });
       await loadMembershipTypes();
     } catch (err) {
-      setError('Failed to update membership type');
+      setError('Failed to update membership type status');
       console.error(err);
     }
   };
@@ -220,9 +292,17 @@ const MembershipTypesPage: React.FC = () => {
             <TextField
               label="Code"
               value={formData.code}
-              onChange={(e) => setFormData({ ...formData, code: e.target.value })}
               required
               fullWidth
+              disabled={true}
+              helperText={
+                editingType
+                  ? 'Membership type code (cannot be changed)'
+                  : 'Code is auto-generated with sequential number to prevent collisions (e.g., MT0001, MT0002)'
+              }
+              InputProps={{
+                readOnly: true,
+              }}
             />
             <TextField
               label="Name"

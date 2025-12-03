@@ -7,7 +7,6 @@ import {
   Button,
   CircularProgress,
   Alert,
-  Grid,
 } from '@mui/material';
 import { Save } from '@mui/icons-material';
 import {
@@ -17,7 +16,6 @@ import {
 } from '../../services/teeTimeConfigService';
 
 const TeeTimeConfigPage: React.FC = () => {
-  const [config, setConfig] = useState<TeeTimeConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +36,6 @@ const TeeTimeConfigPage: React.FC = () => {
       setLoading(true);
       setError(null);
       const data = await getTeeTimeConfig();
-      setConfig(data);
       setFormData(data);
     } catch (err) {
       setError('Failed to load tee time configuration');
@@ -108,32 +105,30 @@ const TeeTimeConfigPage: React.FC = () => {
               Configure the default rules for tee time generation and booking.
             </Typography>
 
-            <Grid container spacing={3}>
-              <Grid item xs={12} sm={6}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
                 <TextField
                   label="Start Time"
                   value={formData.startTime}
                   onChange={(e) => handleTimeChange('startTime', e.target.value)}
                   placeholder="HH:mm"
                   helperText="Format: HH:mm (e.g., 06:00)"
-                  fullWidth
+                  sx={{ flex: '1 1 48%', minWidth: '200px' }}
                   required
                   inputProps={{ pattern: '^([0-1][0-9]|2[0-3]):[0-5][0-9]$' }}
                 />
-              </Grid>
-              <Grid item xs={12} sm={6}>
                 <TextField
                   label="End Time"
                   value={formData.endTime}
                   onChange={(e) => handleTimeChange('endTime', e.target.value)}
                   placeholder="HH:mm"
                   helperText="Format: HH:mm (e.g., 18:00)"
-                  fullWidth
+                  sx={{ flex: '1 1 48%', minWidth: '200px' }}
                   required
                   inputProps={{ pattern: '^([0-1][0-9]|2[0-3]):[0-5][0-9]$' }}
                 />
-              </Grid>
-              <Grid item xs={12} sm={6}>
+              </Box>
+              <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
                 <TextField
                   label="Interval (minutes)"
                   type="number"
@@ -145,12 +140,10 @@ const TeeTimeConfigPage: React.FC = () => {
                     })
                   }
                   helperText="Time interval between tee time slots"
-                  fullWidth
+                  sx={{ flex: '1 1 48%', minWidth: '200px' }}
                   required
                   inputProps={{ min: 5, max: 60, step: 5 }}
                 />
-              </Grid>
-              <Grid item xs={12} sm={6}>
                 <TextField
                   label="Max Players Per Slot"
                   type="number"
@@ -162,12 +155,12 @@ const TeeTimeConfigPage: React.FC = () => {
                     })
                   }
                   helperText="Maximum number of players allowed per tee time"
-                  fullWidth
+                  sx={{ flex: '1 1 48%', minWidth: '200px' }}
                   required
                   inputProps={{ min: 1, max: 8 }}
                 />
-              </Grid>
-            </Grid>
+              </Box>
+            </Box>
 
             <Box sx={{ mt: 4, display: 'flex', justifyContent: 'flex-end' }}>
               <Button

@@ -79,7 +79,9 @@ const BookingModal: React.FC<BookingModalProps> = ({
 
     try {
       await createBookingMutation.mutateAsync({
-        teeTimeId: teeTime.id,
+        teeTimeId: teeTime.id, // Optional - kept for backward compatibility
+        date: teeTime.date,
+        time: teeTime.startTime, // Use startTime from teeTime object
         players,
         notes: notes.trim() || undefined,
       });

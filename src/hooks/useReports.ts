@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { getSummaryReport, getDailyBookings, getDailyRevenue, type SummaryReport, type DailyBookingsResponse, type DailyRevenueResponse } from '../services/reportService';
 
-export const useSummaryReport = (from?: string, to?: string) => {
+export const useSummaryReport = () => {
   return useQuery<SummaryReport>({
-    queryKey: ['reports', 'summary', from, to],
-    queryFn: () => getSummaryReport(from, to),
+    queryKey: ['reports', 'summary'],
+    queryFn: () => getSummaryReport(),
     retry: false,
     refetchOnWindowFocus: false,
   });

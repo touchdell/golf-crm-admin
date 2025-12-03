@@ -1,4 +1,4 @@
-import { apiClient } from './apiClient';
+import { supabase } from '../lib/supabase';
 
 export interface Member {
   id: number;
@@ -50,67 +50,128 @@ export interface MemberListResponse {
   total: number;
 }
 
-// Generate dummy members data
-const generateDummyMembers = (): Member[] => {
-  const firstNames = [
-    'John', 'Sarah', 'Michael', 'Emily', 'David', 'Jessica', 'Robert', 'Amanda',
-    'James', 'Lisa', 'William', 'Jennifer', 'Richard', 'Michelle', 'Joseph', 'Ashley',
-    'Thomas', 'Melissa', 'Charles', 'Nicole', 'Daniel', 'Stephanie', 'Matthew', 'Rachel',
-    'Anthony', 'Lauren', 'Mark', 'Kimberly', 'Donald', 'Amy', 'Steven', 'Angela',
-  ];
-  
-  const lastNames = [
-    'Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis',
-    'Rodriguez', 'Martinez', 'Hernandez', 'Lopez', 'Wilson', 'Anderson', 'Thomas', 'Taylor',
-    'Moore', 'Jackson', 'Martin', 'Lee', 'Thompson', 'White', 'Harris', 'Clark',
-    'Lewis', 'Robinson', 'Walker', 'Young', 'King', 'Wright', 'Scott', 'Green',
-  ];
+// Database row interface
+interface DbMemberRow {
+  id: number;
+  member_code: string;
+  first_name: string;
+  last_name: string;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  membership_type_id?: number | null;
+  membership_status: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  notes?: string | null;
+}
 
-  const membershipTypes = ['Full', 'Senior', 'Junior', 'Corporate', 'Family', 'Weekday'];
-  const membershipStatuses = ['ACTIVE', 'EXPIRED', 'SUSPENDED', 'PENDING'];
-
-  const members: Member[] = [];
-  
-  for (let i = 1; i <= 50; i++) {
-    const firstName = firstNames[Math.floor(Math.random() * firstNames.length)];
-    const lastName = lastNames[Math.floor(Math.random() * lastNames.length)];
-    const membershipType = membershipTypes[Math.floor(Math.random() * membershipTypes.length)];
-    const membershipStatus = membershipStatuses[Math.floor(Math.random() * membershipStatuses.length)];
-    
-    const startDate = new Date(2023, Math.floor(Math.random() * 12), Math.floor(Math.random() * 28) + 1);
-    const endDate = new Date(startDate);
-    endDate.setFullYear(endDate.getFullYear() + 1);
-
-    members.push({
-      id: i,
-      memberCode: `GC${String(i).padStart(4, '0')}`,
-      firstName,
-      lastName,
-      phone: `+1 (555) ${Math.floor(Math.random() * 900) + 100}-${Math.floor(Math.random() * 9000) + 1000}`,
-      email: `${firstName.toLowerCase()}.${lastName.toLowerCase()}@email.com`,
-      membershipType,
-      membershipStatus,
-      startDate: startDate.toISOString().split('T')[0],
-      endDate: endDate.toISOString().split('T')[0],
-    });
+// Helper function to get membership type code from ID
+const getMembershipTypeCode = async (id: number | null | undefined): Promise<string> => {
+  if (!id) return '';
+  try {
+    const { data } = await supabase
+      .from('membership_types')
+      .select('code')
+      .eq('id', id)
+      .single();
+    return data?.code || '';
+  } catch {
+    return '';
   }
-
-  return members;
 };
 
-const dummyMembers = generateDummyMembers();
+// Helper function to get membership type ID from code
+const getMembershipTypeId = async (code: string): Promise<number | null> => {
+  if (!code) return null;
+  try {
+    const { data } = await supabase
+      .from('membership_types')
+      .select('id')
+      .eq('code', code)
+      .single();
+    return data?.id || null;
+  } catch {
+    return null;
+  }
+};
 
-// Generate unique member code (must be after dummyMembers initialization)
-const generateMemberCode = (): string => {
-  if (dummyMembers.length === 0) {
+// Helper function to map database row to Member interface
+const mapDbRowToMember = async (row: DbMemberRow): Promise<Member> => {
+  const membershipTypeCode = await getMembershipTypeCode(row.membership_type_id);
+  
+  return {
+    id: row.id,
+    memberCode: row.member_code,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    phone: row.phone || undefined,
+    email: row.email || undefined,
+    address: row.address || undefined,
+    membershipType: membershipTypeCode,
+    membershipStatus: row.membership_status,
+    startDate: row.start_date || undefined,
+    endDate: row.end_date || undefined,
+    notes: row.notes || undefined,
+  };
+};
+
+// Helper function to map Member to database row
+const mapMemberToDbRow = async (member: CreateMemberRequest | UpdateMemberRequest) => {
+  const row: Record<string, unknown> = {};
+  if ('memberCode' in member && member.memberCode !== undefined) {
+    row.member_code = member.memberCode;
+  }
+  if ('firstName' in member && member.firstName !== undefined) {
+    row.first_name = member.firstName;
+  }
+  if ('lastName' in member && member.lastName !== undefined) {
+    row.last_name = member.lastName;
+  }
+  if ('phone' in member) row.phone = member.phone;
+  if ('email' in member) row.email = member.email;
+  if ('address' in member) row.address = member.address;
+  if ('membershipType' in member && member.membershipType !== undefined) {
+    // Convert code to ID
+    const typeId = await getMembershipTypeId(member.membershipType);
+    row.membership_type_id = typeId;
+  }
+  if ('membershipStatus' in member && member.membershipStatus !== undefined) {
+    row.membership_status = member.membershipStatus;
+  }
+  if ('startDate' in member) row.start_date = member.startDate || null;
+  if ('endDate' in member) row.end_date = member.endDate || null;
+  if ('notes' in member) row.notes = member.notes;
+  return row;
+};
+
+// Generate member code using Supabase function
+const generateMemberCode = async (): Promise<string> => {
+  try {
+    const { data, error } = await supabase.rpc('generate_member_code');
+    if (error) throw error;
+    return data || 'GC0001';
+  } catch (error) {
+    console.error('Error generating member code:', error);
+    // Fallback: get max code from database
+    try {
+      const { data } = await supabase
+        .from('members')
+        .select('member_code')
+        .order('id', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (data?.member_code) {
+        const match = data.member_code.match(/\d+/);
+        const nextId = match ? parseInt(match[0], 10) + 1 : 1;
+        return `GC${String(nextId).padStart(4, '0')}`;
+      }
+    } catch {
+      // If all else fails, return default
+    }
     return 'GC0001';
   }
-  const maxId = Math.max(...dummyMembers.map(m => {
-    const match = m.memberCode.match(/\d+/);
-    return match ? parseInt(match[0], 10) : 0;
-  }), 0);
-  const nextId = maxId + 1;
-  return `GC${String(nextId).padStart(4, '0')}`;
 };
 
 export const getMembers = async (
@@ -119,129 +180,116 @@ export const getMembers = async (
   search?: string,
   status?: string,
 ): Promise<MemberListResponse> => {
-  // Simulate API delay
-  await new Promise((resolve) => setTimeout(resolve, 500));
-
   try {
-    const res = await apiClient.get<MemberListResponse>('/members', {
-      params: { page, pageSize, search },
-    });
-    // Ensure response has the expected structure
-    if (res.data && Array.isArray(res.data.items)) {
-      return res.data;
-    }
-    throw new Error('Invalid response structure');
-  } catch {
-    // Fallback to dummy data if API fails
-    let filteredMembers = [...dummyMembers];
+    let query = supabase
+      .from('members')
+      .select('*', { count: 'exact' });
 
     // Apply search filter
     if (search) {
-      const searchLower = search.toLowerCase();
-      filteredMembers = filteredMembers.filter(
-        (m) =>
-          m.firstName.toLowerCase().includes(searchLower) ||
-          m.lastName.toLowerCase().includes(searchLower) ||
-          m.memberCode.toLowerCase().includes(searchLower) ||
-          m.email?.toLowerCase().includes(searchLower),
+      query = query.or(
+        `first_name.ilike.%${search}%,last_name.ilike.%${search}%,member_code.ilike.%${search}%,email.ilike.%${search}%`
       );
     }
 
     // Apply status filter
     if (status && status !== 'ALL') {
-      filteredMembers = filteredMembers.filter((m) => m.membershipStatus === status);
+      query = query.eq('membership_status', status);
     }
 
     // Apply pagination
-    const total = filteredMembers.length;
-    const startIndex = (page - 1) * pageSize;
-    const endIndex = startIndex + pageSize;
-    const paginatedMembers = filteredMembers.slice(startIndex, endIndex);
+    const from = (page - 1) * pageSize;
+    const to = from + pageSize - 1;
+    query = query.range(from, to).order('id', { ascending: false });
+
+    const { data, error, count } = await query;
+
+    if (error) throw error;
+
+    // Map all rows to Member interface (with async membership type lookup)
+    const items = await Promise.all((data || []).map(mapDbRowToMember));
 
     return {
-      items: paginatedMembers,
+      items,
       page,
       pageSize,
-      total,
+      total: count || 0,
+    };
+  } catch (error) {
+    console.error('Error fetching members:', error);
+    // Return empty result on error
+    return {
+      items: [],
+      page,
+      pageSize,
+      total: 0,
     };
   }
 };
 
 export const getMemberById = async (id: number): Promise<Member | null> => {
-  // For development: always use dummy data
-  const useDummyData = true; // Set to false when backend is ready
-  
-  if (!useDummyData) {
-    try {
-      const res = await apiClient.get<Member>(`/members/${id}`);
-      return res.data;
-    } catch (error) {
-      console.log('API call failed, using dummy data:', error);
-    }
+  try {
+    const { data, error } = await supabase
+      .from('members')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) throw error;
+    if (!data) return null;
+
+    return await mapDbRowToMember(data);
+  } catch (error) {
+    console.error('Error fetching member:', error);
+    return null;
   }
-  
-  // Fallback to dummy data
-  const member = dummyMembers.find((m) => m.id === id);
-  return member || null;
 };
 
 export const createMember = async (payload: CreateMemberRequest): Promise<Member> => {
-  const useDummyData = true; // Set to false when backend is ready
-  
-  // Auto-generate member code if not provided
-  const memberCode = payload.memberCode || generateMemberCode();
-  
-  if (!useDummyData) {
-    try {
-      const res = await apiClient.post<Member>('/members', {
-        ...payload,
-        memberCode, // Include auto-generated code
-      });
-      return res.data;
-    } catch (error) {
-      console.log('API call failed, using dummy data:', error);
-      throw error;
-    }
+  try {
+    // Auto-generate member code if not provided
+    const memberCode = payload.memberCode || await generateMemberCode();
+
+    const dbRow = await mapMemberToDbRow({ ...payload, memberCode });
+    
+    const { data, error } = await supabase
+      .from('members')
+      .insert(dbRow)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!data) throw new Error('Failed to create member');
+
+    return mapDbRowToMember(data);
+  } catch (error) {
+    console.error('Error creating member:', error);
+    throw error;
   }
-  
-  // Fallback to dummy data
-  const newMember: Member = {
-    id: Date.now(),
-    memberCode,
-    ...payload,
-  };
-  dummyMembers.push(newMember);
-  return newMember;
 };
 
 export const updateMember = async (
   id: number,
   payload: UpdateMemberRequest,
 ): Promise<Member> => {
-  const useDummyData = true; // Set to false when backend is ready
-  
-  if (!useDummyData) {
-    try {
-      const res = await apiClient.put<Member>(`/members/${id}`, payload);
-      return res.data;
-    } catch (error) {
-      console.log('API call failed, using dummy data:', error);
-      throw error;
-    }
+  try {
+    const dbRow = await mapMemberToDbRow(payload);
+
+    const { data, error } = await supabase
+      .from('members')
+      .update(dbRow)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    if (!data) throw new Error('Member not found');
+
+    return mapDbRowToMember(data);
+  } catch (error) {
+    console.error('Error updating member:', error);
+    throw error;
   }
-  
-  // Fallback to dummy data
-  const memberIndex = dummyMembers.findIndex((m) => m.id === id);
-  if (memberIndex === -1) {
-    throw new Error('Member not found');
-  }
-  
-  dummyMembers[memberIndex] = {
-    ...dummyMembers[memberIndex],
-    ...payload,
-  };
-  
-  return dummyMembers[memberIndex];
 };
 
 export const updateMemberStatus = async (

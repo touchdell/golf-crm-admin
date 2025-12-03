@@ -33,6 +33,7 @@ import {
   type PriceCategory,
   type CreatePriceItemRequest,
 } from '../../services/priceService';
+import { supabase } from '../../lib/supabase';
 
 const PRICE_CATEGORIES: PriceCategory[] = ['GREEN_FEE', 'CART', 'CADDY', 'OTHER'];
 
@@ -50,6 +51,7 @@ const PricesPage: React.FC = () => {
     currency: 'USD',
     category: 'GREEN_FEE',
   });
+  const [unitPriceInput, setUnitPriceInput] = useState<string>('');
 
   useEffect(() => {
     loadPriceItems();
@@ -70,7 +72,60 @@ const PricesPage: React.FC = () => {
     }
   };
 
-  const handleOpenDialog = (item?: PriceItem) => {
+  // Generate code with running number based on category
+  const generateCode = async (category: PriceCategory): Promise<string> => {
+    const categoryPrefix: Record<PriceCategory, string> = {
+      GREEN_FEE: 'GF',
+      CART: 'CT',
+      CADDY: 'CD',
+      OTHER: 'OT',
+    };
+    
+    const prefix = categoryPrefix[category] || 'OT';
+    
+    try {
+      // Try to use Supabase RPC function if available
+      const { data, error } = await supabase.rpc('generate_price_item_code', {
+        category_prefix: prefix,
+      });
+      
+      if (!error && data) {
+        return data;
+      }
+    } catch (error) {
+      console.warn('RPC function not available, using fallback:', error);
+    }
+    
+    // Fallback: Query existing codes and find next number
+    try {
+      const { data: existingCodes } = await supabase
+        .from('price_items')
+        .select('code')
+        .like('code', `${prefix}%`)
+        .order('code', { ascending: false });
+      
+      if (existingCodes && existingCodes.length > 0) {
+        // Extract numbers from existing codes (e.g., GF0001 -> 1)
+        const numbers = existingCodes
+          .map((item) => {
+            const match = item.code.match(new RegExp(`^${prefix}(\\d+)$`));
+            return match ? parseInt(match[1], 10) : 0;
+          })
+          .filter((num) => num > 0);
+        
+        const maxNumber = numbers.length > 0 ? Math.max(...numbers) : 0;
+        const nextNumber = maxNumber + 1;
+        return `${prefix}${String(nextNumber).padStart(4, '0')}`;
+      }
+    } catch (error) {
+      console.error('Error generating code:', error);
+    }
+    
+    // Default: return first number
+    return `${prefix}0001`;
+  };
+
+  const handleOpenDialog = async (item?: PriceItem) => {
     if (item) {
       setEditingItem(item);
       setFormData({
@@ -81,16 +136,21 @@ const PricesPage: React.FC = () => {
         currency: item.currency,
         category: item.category,
       });
+      setUnitPriceInput(item.unitPrice.toString());
     } else {
       setEditingItem(null);
+      // Auto-generate code immediately when opening dialog for new item
+      const initialCategory: PriceCategory = 'GREEN_FEE';
+      const generatedCode = await generateCode(initialCategory);
       setFormData({
-        code: '',
+        code: generatedCode,
         name: '',
         description: '',
         unitPrice: 0,
         currency: 'USD',
-        category: 'GREEN_FEE',
+        category: initialCategory,
       });
+      setUnitPriceInput('');
     }
     setDialogOpen(true);
   };
@@ -102,10 +162,22 @@ const PricesPage: React.FC = () => {
 
   const handleSubmit = async () => {
     try {
+      // Code should already be generated, but ensure it exists
+      const finalFormData = { ...formData };
+      if (!finalFormData.code) {
+        finalFormData.code = await generateCode(finalFormData.category);
+      }
+      
+      // Ensure unit price is valid
+      const priceValue = parseFloat(unitPriceInput);
+      if (!isNaN(priceValue) && priceValue >= 0) {
+        finalFormData.unitPrice = priceValue;
+      }
+      
       if (editingItem) {
-        await updatePriceItem(editingItem.id, formData);
+        await updatePriceItem(editingItem.id, finalFormData);
       } else {
-        await createPriceItem(formData);
+        await createPriceItem(finalFormData);
       }
       await loadPriceItems();
       handleCloseDialog();
@@ -244,14 +316,25 @@ const PricesPage: React.FC = () => {
             <TextField
               label="Code"
               value={formData.code}
-              onChange={(e) => setFormData({ ...formData, code: e.target.value })}
               required
               fullWidth
+              disabled={true}
+              helperText={
+                editingItem
+                  ? 'Price item code (cannot be changed)'
+                  : 'Code is auto-generated with sequential number to prevent collisions (e.g., GF0001, GF0002)'
+              }
+              InputProps={{
+                readOnly: true,
+              }}
             />
             <TextField
               label="Name"
               value={formData.name}
-              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              onChange={(e) => {
+                const newName = e.target.value;
+                setFormData((prev) => ({ ...prev, name: newName }));
+              }}
               required
               fullWidth
             />
@@ -267,9 +350,15 @@ const PricesPage: React.FC = () => {
               select
               label="Category"
               value={formData.category}
-              onChange={(e) =>
-                setFormData({ ...formData, category: e.target.value as PriceCategory })
-              }
+              onChange={async (e) => {
+                const newCategory = e.target.value as PriceCategory;
+                setFormData((prev) => ({ ...prev, category: newCategory }));
+                // Regenerate code when category changes (for new items only)
+                if (!editingItem) {
+                  const generatedCode = await generateCode(newCategory);
+                  setFormData((prev) => ({ ...prev, category: newCategory, code: generatedCode }));
+                }
+              }}
               required
               fullWidth
             >
@@ -282,13 +371,33 @@ const PricesPage: React.FC = () => {
             <TextField
               label="Unit Price"
               type="number"
-              value={formData.unitPrice}
-              onChange={(e) =>
-                setFormData({ ...formData, unitPrice: parseFloat(e.target.value) || 0 })
-              }
+              value={unitPriceInput}
+              onChange={(e) => {
+                const inputValue = e.target.value;
+                setUnitPriceInput(inputValue);
+                // Update formData only if valid number
+                const numValue = parseFloat(inputValue);
+                if (!isNaN(numValue) && numValue >= 0) {
+                  setFormData({ ...formData, unitPrice: numValue });
+                } else if (inputValue === '' || inputValue === '.') {
+                  // Allow empty or just decimal point while typing
+                  setFormData({ ...formData, unitPrice: 0 });
+                }
+              }}
+              onBlur={() => {
+                // Ensure valid value on blur
+                const numValue = parseFloat(unitPriceInput);
+                if (isNaN(numValue) || numValue < 0) {
+                  setUnitPriceInput('0');
+                  setFormData({ ...formData, unitPrice: 0 });
+                } else {
+                  setUnitPriceInput(numValue.toString());
+                }
+              }}
               required
               fullWidth
               inputProps={{ step: 0.01, min: 0 }}
+              placeholder="0.00"
             />
             <TextField
               label="Currency"
