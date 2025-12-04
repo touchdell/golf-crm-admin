@@ -93,7 +93,7 @@ const MemberSelectionModal: React.FC<MemberSelectionModalProps> = ({
               }
               setSelectedMember(newValue);
             }}
-            isOptionDisabled={(option) => excludedSet.has(option.id)}
+            getOptionDisabled={(option: Member) => excludedSet.has(option.id)}
             onInputChange={(_, newInputValue) => {
               setSearch(newInputValue);
             }}
@@ -115,7 +115,7 @@ const MemberSelectionModal: React.FC<MemberSelectionModalProps> = ({
         <Button
           onClick={handleSubmit}
           variant="contained"
-          disabled={!selectedMember || isSelectedMemberExcluded}
+          disabled={!selectedMember || (isSelectedMemberExcluded ?? false)}
         >
           Continue
         </Button>

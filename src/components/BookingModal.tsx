@@ -263,7 +263,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
     if (conflictingPlayers.length > 0) {
       const conflictingMemberIds = conflictingPlayers.map(p => p.memberId);
       const conflictingMemberNames = additionalMembers
-        .filter(m => conflictingMemberIds.includes(m.memberId))
+        .filter(m => conflictingMemberIds.includes(m.id))
         .map(m => `${m.firstName} ${m.lastName} (${m.memberCode})`)
         .join(', ');
       
@@ -367,25 +367,12 @@ const BookingModal: React.FC<BookingModalProps> = ({
   // Selection count for UI (main + additional in this modal)
   const selectedCount = (mainMember ? 1 : 0) + additionalMembers.length;
 
-  // ✅ FIXED: Calculate max additional players correctly
-  // In create mode: Calculate based on original available slots minus main member (if main member is new)
-  // In edit mode: Can have up to maxPlayers total (replacing existing booking)
-  const maxAdditionalPlayers = isEditMode 
-    ? Math.max(0, maxPlayers - 1) // Edit mode: can have up to maxPlayers total (minus main member)
-    : (() => {
-        // Create mode: Calculate based on original available slots
-        // If main member is already booked in this slot, they don't consume a new slot
-        const mainMemberConsumesSlot = mainMember && !existingMemberIdSet.has(mainMember.id);
-        return Math.max(0, originalAvailableSlots - (mainMemberConsumesSlot ? 1 : 0));
-      })();
-
   // ✅ FIXED: Ensure options array is stable - use raw items, no object rebuilding
   // Filter out:
   //  - main member (NEVER allow main member as additional player)
   //  - members already selected as additional (prevent duplicates within current selection)
   //  - members already booked in this tee time (existingMemberIds from other bookings)
   const allAdditionalMembers = additionalMembersData?.items || [];
-  const selectedMemberIds = new Set(additionalMembers.map((m) => m.id));
   
   // ✅ FIXED: Create a comprehensive exclusion set that includes main member
   const excludedMemberIdsSet = new Set<number>();
@@ -445,7 +432,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
   // 3. Duplicate members within additionalMembers array itself
   const seenMemberIds = new Set<number>();
   const duplicateAdditionalMembers = additionalMembers.filter(
-    (m, index) => {
+    (m) => {
       // Check if this member is the main member
       if (m.id === mainMember?.id) {
         return true; // Main member cannot be additional
@@ -723,7 +710,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
                   }
                   // If trying to add beyond limit or excluded member, keep current selection (don't update)
                 }}
-                isOptionDisabled={(option) => {
+                getOptionDisabled={(option: Member) => {
                   // Disable main member (should never appear, but safety check)
                   if (option.id === mainMember?.id) {
                     return true;
