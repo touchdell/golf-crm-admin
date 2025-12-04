@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
@@ -18,11 +18,16 @@ import {
   ListItem,
   ListItemText,
   CircularProgress,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
 import { ArrowBack, ArrowForward, Delete as DeleteIcon } from '@mui/icons-material';
 import dayjs from 'dayjs';
 import { useTeeTimes } from '../../hooks/useTeeTimes';
 import { useCancelBooking } from '../../hooks/useBooking';
+import { getActiveCourses, type Course } from '../../services/courseService';
 import type { TeeTime } from '../../services/teeTimeService';
 import type { Member } from '../../services/memberService';
 import BookingModal from '../../components/BookingModal';
@@ -30,7 +35,9 @@ import MemberSelectionModal from '../../components/MemberSelectionModal';
 
 const TeeSheetPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState(dayjs().format('YYYY-MM-DD'));
-  const [courseId] = useState<number | undefined>(undefined); // extend later
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [selectedCourseId, setSelectedCourseId] = useState<number | null>(null);
+  const [loadingCourses, setLoadingCourses] = useState(true);
   const [selectedTeeTime, setSelectedTeeTime] = useState<TeeTime | null>(null);
   const [selectedMainMember, setSelectedMainMember] = useState<Member | null>(null);
   const [selectedBookingId, setSelectedBookingId] = useState<number | null>(null);
@@ -46,9 +53,30 @@ const TeeSheetPage: React.FC = () => {
   
   const cancelBookingMutation = useCancelBooking();
 
+  // Load active courses on mount
+  useEffect(() => {
+    const loadCourses = async () => {
+      try {
+        setLoadingCourses(true);
+        const activeCourses = await getActiveCourses();
+        setCourses(activeCourses);
+        // Auto-select first course if available and no course is selected
+        if (activeCourses.length > 0 && selectedCourseId === null) {
+          setSelectedCourseId(activeCourses[0].id);
+        }
+      } catch (error) {
+        console.error('Error loading courses:', error);
+      } finally {
+        setLoadingCourses(false);
+      }
+    };
+    loadCourses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount
+
   const { data: teeTimes, isLoading, isError, refetch } = useTeeTimes(
     selectedDate,
-    courseId,
+    selectedCourseId || undefined,
   );
 
   const handlePrevDay = () => {
@@ -298,31 +326,93 @@ const TeeSheetPage: React.FC = () => {
         gap={2}
         flexWrap="wrap"
       >
-        <Box display="flex" alignItems="center" gap={1}>
-          <IconButton onClick={handlePrevDay} size="small">
-            <ArrowBack />
-          </IconButton>
-          <TextField
-            type="date"
-            size="small"
-            value={selectedDate}
-            onChange={handleDateChange}
-          />
-          <IconButton onClick={handleNextDay} size="small">
-            <ArrowForward />
-          </IconButton>
+        <Box display="flex" alignItems="center" gap={2}>
+          <Box display="flex" alignItems="center" gap={1}>
+            <IconButton onClick={handlePrevDay} size="small">
+              <ArrowBack />
+            </IconButton>
+            <TextField
+              type="date"
+              size="small"
+              value={selectedDate}
+              onChange={handleDateChange}
+            />
+            <IconButton onClick={handleNextDay} size="small">
+              <ArrowForward />
+            </IconButton>
+          </Box>
+          
+          {/* Course Selection */}
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Course</InputLabel>
+            <Select
+              value={selectedCourseId || ''}
+              onChange={(e) => setSelectedCourseId(e.target.value as number)}
+              label="Course"
+              disabled={loadingCourses}
+            >
+              {courses.map((course) => (
+                <MenuItem key={course.id} value={course.id}>
+                  {course.name} {course.holeCount ? `(${course.holeCount} holes)` : ''}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Box>
-
-        {/* Later: course selector, filters */}
       </Box>
+
+      {/* Course Info Display */}
+      {selectedCourseId && courses.length > 0 && (
+        <Box mb={2}>
+          {(() => {
+            const selectedCourse = courses.find(c => c.id === selectedCourseId);
+            if (!selectedCourse) return null;
+            return (
+              <Paper sx={{ p: 1.5, bgcolor: 'primary.light', color: 'primary.contrastText' }}>
+                <Typography variant="subtitle2" fontWeight="medium">
+                  {selectedCourse.name}
+                  {selectedCourse.parTotal && ` • Par ${selectedCourse.parTotal}`}
+                  {selectedCourse.yardageTotal && ` • ${selectedCourse.yardageTotal} yards`}
+                </Typography>
+                {selectedCourse.description && (
+                  <Typography variant="caption" sx={{ opacity: 0.9, display: 'block', mt: 0.5 }}>
+                    {selectedCourse.description}
+                  </Typography>
+                )}
+              </Paper>
+            );
+          })()}
+        </Box>
+      )}
 
       <Paper>
         <Box p={2}>
-          {isLoading && <Box>Loading tee times...</Box>}
-          {isError && <Box>Error loading tee times.</Box>}
+          {loadingCourses && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+              <CircularProgress size={16} />
+              <Typography variant="body2">Loading courses...</Typography>
+            </Box>
+          )}
+          {!loadingCourses && courses.length === 0 && (
+            <Alert severity="warning" sx={{ mb: 2 }}>
+              No active courses found. Please add courses in Settings → Courses.
+            </Alert>
+          )}
+          {!loadingCourses && courses.length > 0 && !selectedCourseId && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Please select a course to view tee times.
+            </Alert>
+          )}
+          {isLoading && selectedCourseId && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <CircularProgress size={16} />
+              <Typography variant="body2">Loading tee times...</Typography>
+            </Box>
+          )}
+          {isError && <Alert severity="error" sx={{ mb: 2 }}>Error loading tee times.</Alert>}
 
-          {!isLoading && !isError && (!teeTimes || teeTimes.length === 0) && (
-            <Box>No tee times configured for this date.</Box>
+          {!isLoading && !isError && selectedCourseId && (!teeTimes || teeTimes.length === 0) && (
+            <Box>No tee times configured for this date and course.</Box>
           )}
 
           {!isLoading && teeTimes && Array.isArray(teeTimes) && teeTimes.length > 0 && (
@@ -440,12 +530,24 @@ const TeeSheetPage: React.FC = () => {
         fullWidth
       >
         <DialogTitle>
-          Bookings for {selectedTeeTime?.startTime} - {selectedTeeTime?.endTime}
-          {selectedTeeTime && hasDuplicateMainMembers(selectedTeeTime) && (
-            <Alert severity="warning" sx={{ mt: 1 }}>
-              ⚠️ Duplicate main members detected
-            </Alert>
-          )}
+          <Box>
+            <Typography variant="h6">
+              Bookings for {selectedTeeTime?.startTime} - {selectedTeeTime?.endTime}
+            </Typography>
+            {selectedCourseId && courses.length > 0 && (() => {
+              const selectedCourse = courses.find(c => c.id === selectedCourseId);
+              return selectedCourse ? (
+                <Typography variant="caption" color="text.secondary">
+                  Course: {selectedCourse.name} ({selectedCourse.code})
+                </Typography>
+              ) : null;
+            })()}
+            {selectedTeeTime && hasDuplicateMainMembers(selectedTeeTime) && (
+              <Alert severity="warning" sx={{ mt: 1 }}>
+                ⚠️ Duplicate main members detected
+              </Alert>
+            )}
+          </Box>
         </DialogTitle>
         <DialogContent>
           {selectedTeeTime?.bookings && selectedTeeTime.bookings.length > 0 ? (

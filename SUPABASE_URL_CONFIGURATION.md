@@ -95,3 +95,4 @@ On the URL Configuration page, you should see:
 
 That's it! No CORS configuration needed - Supabase handles that automatically.
 
+

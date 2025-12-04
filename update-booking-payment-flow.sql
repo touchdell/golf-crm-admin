@@ -39,3 +39,4 @@ CREATE INDEX IF NOT EXISTS idx_bookings_payment_status ON bookings(payment_statu
 COMMENT ON COLUMN bookings.status IS 'Booking status: BOOKED (after slot chosen & confirmed), CHECKED_IN (on arrival), COMPLETED/NO_SHOW/CANCELLED (later)';
 COMMENT ON COLUMN bookings.payment_status IS 'Payment status: UNPAID, PAID';
 
+

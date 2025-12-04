@@ -125,3 +125,4 @@ Check browser console for these logs:
 4. **Remove items** → `total_amount` decreases → `payment_status` recalculates
 5. **View booking list** → Status is calculated dynamically from actual payments
 
+

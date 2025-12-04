@@ -417,3 +417,4 @@ export const deletePromotionBand = async (id: string): Promise<void> => {
   }
 };
 
+

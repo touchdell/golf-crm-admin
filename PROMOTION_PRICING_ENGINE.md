@@ -134,3 +134,4 @@ The migration includes a seed example:
 - Promotion stacking (when `stacking = 'STACKABLE'`)
 - More complex conditions via `extra_conditions` JSONB field
 
+

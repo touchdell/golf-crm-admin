@@ -115,3 +115,4 @@ After successfully creating the user:
 3. ✅ Test creating a price item
 4. ✅ Verify data persists in Supabase
 
+

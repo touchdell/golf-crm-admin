@@ -122,7 +122,7 @@ const CoursesPage: React.FC = () => {
     if (course) {
       setEditingCourse(course);
       setCourseFormData({
-        code: course.code,
+        code: course.code, // Keep code for display, but will be read-only
         name: course.name,
         description: course.description || '',
         parTotal: course.parTotal,
@@ -134,7 +134,7 @@ const CoursesPage: React.FC = () => {
     } else {
       setEditingCourse(null);
       setCourseFormData({
-        code: '',
+        code: '', // Will be auto-generated, leave empty
         name: '',
         description: '',
         parTotal: undefined,
@@ -193,9 +193,13 @@ const CoursesPage: React.FC = () => {
   const handleSubmitCourse = async () => {
     try {
       if (editingCourse) {
-        await updateCourse(editingCourse.id, courseFormData);
+        // When editing, don't send code (it shouldn't be changed)
+        const { code, ...updateData } = courseFormData;
+        await updateCourse(editingCourse.id, updateData);
       } else {
-        await createCourse(courseFormData);
+        // When creating, don't send code (it will be auto-generated)
+        const { code, ...createData } = courseFormData;
+        await createCourse(createData);
       }
       await loadCourses();
       handleCloseCourseDialog();
@@ -420,11 +424,10 @@ const CoursesPage: React.FC = () => {
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 2 }}>
             <TextField
               label="Code"
-              value={courseFormData.code}
-              onChange={(e) => setCourseFormData({ ...courseFormData, code: e.target.value.toUpperCase() })}
-              required
+              value={editingCourse ? courseFormData.code : 'Auto-generated'}
+              disabled
               fullWidth
-              helperText="Unique course code (e.g., COURSE_A)"
+              helperText={editingCourse ? "Course code cannot be changed" : "Code will be auto-generated (e.g., CR0001, CR0002)"}
             />
             <TextField
               label="Name"

@@ -128,3 +128,4 @@ GRANT EXECUTE ON FUNCTION get_best_price TO anon;
 - **Loading**: Shows "Calculating pricing..." spinner
 - **Error**: Falls back to base pricing and logs error to console
 
+

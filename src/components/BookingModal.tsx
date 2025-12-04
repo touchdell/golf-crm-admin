@@ -17,7 +17,8 @@ import {
 import { Delete as DeleteIcon } from '@mui/icons-material';
 import { useMembers } from '../hooks/useMembers';
 import { useCreateBooking, useUpdateBooking, useBooking, useCancelBooking } from '../hooks/useBooking';
-import { getBestPrice, mapMembershipTypeToSegment, getPriceItems, type BestPriceResult } from '../services/priceService';
+import { getPriceItems, type BestPriceResult } from '../services/priceService';
+import { getCourseById, type Course } from '../services/courseService';
 import type { TeeTime } from '../services/teeTimeService';
 import type { Member } from '../services/memberService';
 import dayjs from 'dayjs';
@@ -49,10 +50,33 @@ const BookingModal: React.FC<BookingModalProps> = ({
   const [duplicateInCurrentBooking, setDuplicateInCurrentBooking] = useState<Member | null>(null);
   const [pricingInfo, setPricingInfo] = useState<BestPriceResult | null>(null);
   const [loadingPricing, setLoadingPricing] = useState(false);
+  const [course, setCourse] = useState<Course | null>(null);
+  const [loadingCourse, setLoadingCourse] = useState(false);
   
   // ✅ FIXED: Track if we've already loaded initial booking data to prevent overwriting user changes
   const hasLoadedInitialData = useRef(false);
   const lastBookingIdRef = useRef<number | null>(null);
+
+  // Load course information when teeTime changes
+  useEffect(() => {
+    const loadCourse = async () => {
+      if (!teeTime?.courseId) {
+        setCourse(null);
+        return;
+      }
+      try {
+        setLoadingCourse(true);
+        const courseData = await getCourseById(teeTime.courseId);
+        setCourse(courseData);
+      } catch (error) {
+        console.error('Error loading course:', error);
+        setCourse(null);
+      } finally {
+        setLoadingCourse(false);
+      }
+    };
+    loadCourse();
+  }, [teeTime?.courseId]);
 
   // Fetch members for additional players only (main member is fixed from props)
   const { data: additionalMembersData, isLoading: additionalMembersLoading } = useMembers(
@@ -129,6 +153,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
   }, [additionalMembers]);
 
   // Calculate pricing when teeTime, mainMember, or additionalMembers change
+  // Simplified pricing: Main member pays base price + (additional players × base price)
   useEffect(() => {
     const calculatePricing = async () => {
       if (!teeTime || !mainMember || !open) {
@@ -141,12 +166,8 @@ const BookingModal: React.FC<BookingModalProps> = ({
         return;
       }
 
-      console.log('[Pricing] Starting calculation:', {
-        teeDate: teeTime.date,
-        teeTime: teeTime.startTime,
-        courseId: teeTime.courseId,
+      console.log('[Pricing] Starting simplified calculation:', {
         mainMemberId: mainMember.id,
-        membershipType: mainMember.membershipType,
         numAdditionalPlayers: additionalMembers.length,
       });
 
@@ -160,75 +181,50 @@ const BookingModal: React.FC<BookingModalProps> = ({
         const caddy = priceItems.find(item => item.category === 'CADDY' && item.isActive);
         const cart = priceItems.find(item => item.category === 'CART' && item.isActive);
 
-        // Calculate base price (sum of all active price items)
-        const basePrice = (greenFee?.unitPrice || 0) + (caddy?.unitPrice || 0) + (cart?.unitPrice || 0);
-        console.log('[Pricing] Base price calculated:', {
-          basePrice,
+        // Calculate base price per player (sum of all active price items)
+        const basePricePerPlayer = (greenFee?.unitPrice || 0) + (caddy?.unitPrice || 0) + (cart?.unitPrice || 0);
+        console.log('[Pricing] Base price per player calculated:', {
+          basePricePerPlayer,
           greenFee: greenFee?.unitPrice || 0,
           caddy: caddy?.unitPrice || 0,
           cart: cart?.unitPrice || 0,
         });
 
-        // Get member segment from membership type
-        const memberSegment = mapMembershipTypeToSegment(mainMember.membershipType);
-        console.log('[Pricing] Member segment:', {
-          membershipType: mainMember.membershipType,
-          mappedSegment: memberSegment,
+        // Simplified pricing model:
+        // - Main member pays: base price
+        // - Additional players: each additional player costs base price
+        // - Total = main member price + (additional players × base price)
+        const mainMemberPrice = basePricePerPlayer;
+        const additionalPlayersCount = additionalMembers.length;
+        const additionalPlayersPrice = basePricePerPlayer * additionalPlayersCount;
+        const totalPrice = mainMemberPrice + additionalPlayersPrice;
+
+        console.log('[Pricing] Simplified pricing calculated:', {
+          mainMemberPrice,
+          additionalPlayersCount,
+          additionalPlayersPrice,
+          totalPrice,
         });
 
-        // Calculate total number of players
-        const numPlayers = 1 + additionalMembers.length; // Main member + additional
-
-        // Get best price with promotion
-        console.log('[Pricing] Calling getBestPrice with:', {
-          teeDate: teeTime.date,
-          teeTime: teeTime.startTime,
-          basePrice,
-          memberSegment,
-          courseId: teeTime.courseId,
-          numPlayers,
+        // Set pricing info with simplified model
+        setPricingInfo({
+          finalPrice: totalPrice,
+          basePrice: basePricePerPlayer, // Store base price per player for display
+          source: 'BASE',
+          includesGreenFee: true,
+          includesCaddy: true,
+          includesCart: true,
         });
-        
-        const bestPrice = await getBestPrice({
-          teeDate: teeTime.date,
-          teeTime: teeTime.startTime,
-          basePrice,
-          memberSegment,
-          courseId: teeTime.courseId,
-          numPlayers,
-        });
-
-        console.log('[Pricing] Best price result:', bestPrice);
-        setPricingInfo(bestPrice);
       } catch (error) {
         console.error('[Pricing] Error calculating pricing:', error);
-        // Fallback: show base pricing even on error
-        try {
-          const priceItems = await getPriceItems();
-          const greenFee = priceItems.find(item => item.category === 'GREEN_FEE' && item.isActive);
-          const caddy = priceItems.find(item => item.category === 'CADDY' && item.isActive);
-          const cart = priceItems.find(item => item.category === 'CART' && item.isActive);
-          const basePrice = (greenFee?.unitPrice || 0) + (caddy?.unitPrice || 0) + (cart?.unitPrice || 0);
-          
-          setPricingInfo({
-            finalPrice: basePrice,
-            basePrice,
-            source: 'BASE',
-            includesGreenFee: true,
-            includesCaddy: true,
-            includesCart: true,
-          });
-        } catch (fallbackError) {
-          console.error('[Pricing] Fallback pricing also failed:', fallbackError);
-          setPricingInfo(null);
-        }
+        setPricingInfo(null);
       } finally {
         setLoadingPricing(false);
       }
     };
 
     calculatePricing();
-  }, [teeTime?.id, teeTime?.date, teeTime?.startTime, teeTime?.courseId, mainMember?.id, mainMember?.membershipType, additionalMembers.length, open]);
+  }, [teeTime?.id, mainMember?.id, additionalMembers.length, open]);
 
   /**
    * Validates and deduplicates players to ensure no duplicate members in a booking.
@@ -407,6 +403,7 @@ const BookingModal: React.FC<BookingModalProps> = ({
           time: teeTime.startTime, // Use startTime from teeTime object
           players,
           notes: notes.trim() || undefined,
+          courseId: teeTime.courseId, // Pass course_id from teeTime
           // Pass pricing information if available
           pricingInfo: pricingInfo ? {
             finalPrice: pricingInfo.finalPrice,
@@ -605,9 +602,21 @@ const BookingModal: React.FC<BookingModalProps> = ({
                 <Typography variant="body2" color="text.secondary">
                   Time: {teeTime.startTime} - {teeTime.endTime}
                 </Typography>
-                <Typography variant="body2" color="text.secondary">
-                  Course ID: {teeTime.courseId}
-                </Typography>
+                {loadingCourse ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Course: Loading...
+                  </Typography>
+                ) : course ? (
+                  <Typography variant="body2" color="text.secondary">
+                    Course: {course.name} ({course.code})
+                    {course.parTotal && ` • Par ${course.parTotal}`}
+                    {course.yardageTotal && ` • ${course.yardageTotal} yards`}
+                  </Typography>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Course: Not specified
+                  </Typography>
+                )}
                 <Typography variant="body2" color="text.secondary">
                   Capacity: {maxPlayers} players per tee time
                 </Typography>
@@ -652,37 +661,61 @@ const BookingModal: React.FC<BookingModalProps> = ({
                 <Box
                   sx={{
                     p: 2,
-                    bgcolor: pricingInfo.source === 'PROMOTION' ? 'success.light' : 'action.hover',
+                    bgcolor: 'action.hover',
                     borderRadius: 1,
                     border: '1px solid',
-                    borderColor: pricingInfo.source === 'PROMOTION' ? 'success.main' : 'divider',
+                    borderColor: 'divider',
                   }}
                 >
-                  {pricingInfo.source === 'PROMOTION' && (
-                    <Alert severity="success" sx={{ mb: 1 }}>
-                      <Typography variant="body2" fontWeight="medium">
-                        🎉 Promotion Applied: {pricingInfo.promotionName || pricingInfo.promotionCode}
-                      </Typography>
-                    </Alert>
-                  )}
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                    {pricingInfo.basePrice !== pricingInfo.finalPrice && (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    {/* Main Member Fee */}
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <Typography variant="body2" color="text.secondary">
-                        Base Price: <span style={{ textDecoration: 'line-through' }}>{pricingInfo.basePrice.toFixed(2)} THB</span>
+                        Main Member Fee:
                       </Typography>
+                      <Typography variant="body2" fontWeight="medium">
+                        {pricingInfo.basePrice.toFixed(2)} THB
+                      </Typography>
+                    </Box>
+
+                    {/* Additional Players Fee */}
+                    {additionalMembers.length > 0 && (
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <Typography variant="body2" color="text.secondary">
+                          Additional Players ({additionalMembers.length} × {pricingInfo.basePrice.toFixed(2)}):
+                        </Typography>
+                        <Typography variant="body2" fontWeight="medium">
+                          {(pricingInfo.basePrice * additionalMembers.length).toFixed(2)} THB
+                        </Typography>
+                      </Box>
                     )}
-                    <Typography variant="h6" color="primary" fontWeight="bold">
-                      Final Price: {pricingInfo.finalPrice.toFixed(2)} THB
-                    </Typography>
+
+                    {/* Divider */}
+                    <Box sx={{ borderTop: '1px solid', borderColor: 'divider', my: 0.5 }} />
+
+                    {/* Total Price */}
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <Typography variant="h6" fontWeight="bold">
+                        Total Amount:
+                      </Typography>
+                      <Typography variant="h6" color="primary" fontWeight="bold">
+                        {pricingInfo.finalPrice.toFixed(2)} THB
+                      </Typography>
+                    </Box>
+
+                    {/* What's Included */}
                     <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
-                      <Typography variant="caption" color="text.secondary" display="block">
-                        Includes:
+                      <Typography variant="caption" color="text.secondary" display="block" gutterBottom>
+                        Price per player includes:
                       </Typography>
                       <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2 }}>
                         {pricingInfo.includesGreenFee && <li>Green Fee</li>}
                         {pricingInfo.includesCaddy && <li>Caddy</li>}
                         {pricingInfo.includesCart && <li>Cart</li>}
                       </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block', fontStyle: 'italic' }}>
+                        Note: Main member pays for all players in this booking.
+                      </Typography>
                     </Box>
                   </Box>
                 </Box>

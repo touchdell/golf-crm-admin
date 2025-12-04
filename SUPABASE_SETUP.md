@@ -122,3 +122,4 @@ After completing this setup:
 - Row Level Security (RLS) policies protect your data
 - Only users with `ADMIN` role can access all data
 
+

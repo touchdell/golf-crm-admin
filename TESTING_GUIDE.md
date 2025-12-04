@@ -84,3 +84,4 @@ Once authentication, members, and prices are working:
 3. Test with multiple users
 4. Verify RLS policies work correctly
 
+

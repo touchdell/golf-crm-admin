@@ -24,3 +24,4 @@ $$ LANGUAGE plpgsql;
 -- SELECT generate_price_item_code('GF'); -- Should return GF0001 (or next number)
 -- SELECT generate_price_item_code('CT'); -- Should return CT0001 (or next number)
 
+

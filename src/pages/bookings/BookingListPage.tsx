@@ -23,6 +23,7 @@ import {
 import { Search } from '@mui/icons-material';
 import dayjs from 'dayjs';
 import { useBookings, useUpdateBooking } from '../../hooks/useBooking';
+import { getActiveCourses, type Course } from '../../services/courseService';
 import type { BookingListItem } from '../../services/bookingService';
 import BookingDetailDrawer from '../../components/BookingDetailDrawer';
 
@@ -32,13 +33,32 @@ const BookingListPage: React.FC = () => {
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
   const [status, setStatus] = useState<BookingListItem['status'] | ''>('');
+  const [courseId, setCourseId] = useState<number | ''>('');
   const [search, setSearch] = useState<string>('');
   const [selectedBookingId, setSelectedBookingId] = useState<number | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error'>('success');
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [loadingCourses, setLoadingCourses] = useState(true);
   const updateBookingMutation = useUpdateBooking();
+
+  // Load courses on mount
+  useEffect(() => {
+    const loadCourses = async () => {
+      try {
+        setLoadingCourses(true);
+        const activeCourses = await getActiveCourses();
+        setCourses(activeCourses);
+      } catch (error) {
+        console.error('Error loading courses:', error);
+      } finally {
+        setLoadingCourses(false);
+      }
+    };
+    loadCourses();
+  }, []);
 
   const { data, isLoading, isError, error, refetch } = useBookings({
     page,
@@ -46,6 +66,7 @@ const BookingListPage: React.FC = () => {
     fromDate: fromDate || undefined,
     toDate: toDate || undefined,
     status: (status as BookingListItem['status']) || undefined,
+    courseId: courseId ? Number(courseId) : undefined,
     search: search || undefined,
   });
 
@@ -161,6 +182,26 @@ const BookingListPage: React.FC = () => {
               <MenuItem value="NO_SHOW">No Show</MenuItem>
             </Select>
           </FormControl>
+
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Course</InputLabel>
+            <Select
+              value={courseId}
+              label="Course"
+              onChange={(e) => {
+                setCourseId(e.target.value as number | '');
+                setPage(1);
+              }}
+              disabled={loadingCourses}
+            >
+              <MenuItem value="">All Courses</MenuItem>
+              {courses.map((course) => (
+                <MenuItem key={course.id} value={course.id}>
+                  {course.name} ({course.code})
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
         </Box>
       </Paper>
 
@@ -188,6 +229,7 @@ const BookingListPage: React.FC = () => {
                 <TableRow>
                   <TableCell>Date</TableCell>
                   <TableCell>Time</TableCell>
+                  <TableCell>Course</TableCell>
                   <TableCell>Member</TableCell>
                   <TableCell>Status</TableCell>
                   <TableCell>Payment Status</TableCell>
@@ -197,7 +239,7 @@ const BookingListPage: React.FC = () => {
               <TableBody>
                 {!data || !data.items || data.items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
+                    <TableCell colSpan={7} align="center" sx={{ py: 4 }}>
                       <Typography color="text.secondary">
                         {!data ? 'No booking data available.' : 'No bookings found matching your criteria.'}
                       </Typography>
@@ -222,6 +264,22 @@ const BookingListPage: React.FC = () => {
                             ? `${booking.teeTimeStartTime} - ${booking.teeTimeEndTime}`
                             : booking.teeTimeStartTime
                           : '-'}
+                      </TableCell>
+                      <TableCell>
+                        {booking.courseName ? (
+                          <Box>
+                            <Typography variant="body2" fontWeight="medium">
+                              {booking.courseName}
+                            </Typography>
+                            {booking.courseCode && (
+                              <Typography variant="caption" color="text.secondary">
+                                {booking.courseCode}
+                              </Typography>
+                            )}
+                          </Box>
+                        ) : (
+                          '-'
+                        )}
                       </TableCell>
                       <TableCell>{booking.mainMemberName || '-'}</TableCell>
                       <TableCell>

@@ -74,3 +74,4 @@ After fixing the issues above:
 3. **Refresh the page** → Data should persist (not dummy data)
 4. **Check Supabase dashboard** → Verify data in Table Editor
 
+

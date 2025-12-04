@@ -99,16 +99,23 @@ export const getTeeTimes = async (date: string, courseId?: number): Promise<TeeT
     
     const timeSlots = generateTimeSlots(config.startTime, config.endTime, config.intervalMinutes);
 
-    // Get existing tee times for this date
-    const { data: existingTeeTimes, error: teeTimesError } = await supabase
+    // Get existing tee times for this date (filter by course_id if provided)
+    let teeTimesQuery = supabase
       .from('tee_times')
       .select('*')
       .eq('date', date);
+    
+    if (courseId) {
+      teeTimesQuery = teeTimesQuery.eq('course_id', courseId);
+    }
+    
+    const { data: existingTeeTimes, error: teeTimesError } = await teeTimesQuery;
 
     if (teeTimesError) throw teeTimesError;
 
     // Get bookings for this date with member info (including member_code for verification)
-    const { data: bookings, error: bookingsError } = await supabase
+    // Filter by course_id if provided
+    let bookingsQuery = supabase
       .from('bookings')
       .select(`
         id,
@@ -117,6 +124,7 @@ export const getTeeTimes = async (date: string, courseId?: number): Promise<TeeT
         player_count,
         status,
         member_id,
+        course_id,
         members!bookings_member_id_fkey (
           id,
           first_name,
@@ -126,6 +134,13 @@ export const getTeeTimes = async (date: string, courseId?: number): Promise<TeeT
       `)
       .eq('booking_date', date)
       .in('status', ['BOOKED', 'CHECKED_IN']); // Show active bookings (not completed/cancelled)
+    
+    // Filter by course_id if provided
+    if (courseId) {
+      bookingsQuery = bookingsQuery.eq('course_id', courseId);
+    }
+    
+    const { data: bookings, error: bookingsError } = await bookingsQuery;
 
     if (bookingsError) throw bookingsError;
 
@@ -364,7 +379,7 @@ export const getTeeTimes = async (date: string, courseId?: number): Promise<TeeT
       const timeSlots = generateTimeSlots(config.startTime, config.endTime, config.intervalMinutes);
       return timeSlots.map((startTime, index) => ({
         id: index + 1,
-        courseId: courseId || 1,
+        courseId: courseId || 1, // Use provided courseId or default to 1
         date,
         startTime,
         endTime: calculateEndTime(startTime, config.intervalMinutes),

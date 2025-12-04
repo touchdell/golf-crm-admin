@@ -27,7 +27,7 @@ export interface CourseHole {
 }
 
 export interface CreateCourseRequest {
-  code: string;
+  code?: string; // Optional - will be auto-generated if not provided
   name: string;
   description?: string;
   parTotal?: number;
@@ -175,12 +175,45 @@ export const getCourseById = async (id: number): Promise<Course> => {
   }
 };
 
+// Generate course code using Supabase function
+const generateCourseCode = async (): Promise<string> => {
+  try {
+    const { data, error } = await supabase.rpc('generate_course_code');
+    if (error) throw error;
+    return data || 'CR0001';
+  } catch (error) {
+    console.error('Error generating course code:', error);
+    // Fallback: get max code from database
+    try {
+      const { data } = await supabase
+        .from('courses')
+        .select('code')
+        .like('code', 'CR%')
+        .order('code', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (data?.code) {
+        const match = data.code.match(/CR(\d+)/);
+        const nextId = match ? parseInt(match[1], 10) + 1 : 1;
+        return `CR${String(nextId).padStart(4, '0')}`;
+      }
+    } catch {
+      // If all else fails, return default
+    }
+    return 'CR0001';
+  }
+};
+
 export const createCourse = async (payload: CreateCourseRequest): Promise<Course> => {
   try {
+    // Auto-generate code if not provided
+    const courseCode = payload.code || await generateCourseCode();
+    
     const { data, error } = await supabase
       .from('courses')
       .insert({
-        code: payload.code,
+        code: courseCode,
         name: payload.name,
         description: payload.description || null,
         par_total: payload.parTotal || null,
@@ -205,6 +238,8 @@ export const createCourse = async (payload: CreateCourseRequest): Promise<Course
 export const updateCourse = async (id: number, payload: UpdateCourseRequest): Promise<Course> => {
   try {
     const updateData: any = {};
+    // Note: Code should not be updated after creation to maintain consistency
+    // Only allow code update if explicitly provided (for migration purposes)
     if (payload.code !== undefined) updateData.code = payload.code;
     if (payload.name !== undefined) updateData.name = payload.name;
     if (payload.description !== undefined) updateData.description = payload.description || null;

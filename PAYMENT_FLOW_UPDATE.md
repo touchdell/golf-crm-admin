@@ -124,3 +124,4 @@ CREATE INDEX IF NOT EXISTS idx_bookings_payment_status ON bookings(payment_statu
 - Tee sheet shows `BOOKED` and `CHECKED_IN` bookings
 - `COMPLETED` bookings don't show on tee sheet (as expected)
 
+
