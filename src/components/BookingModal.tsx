@@ -132,28 +132,63 @@ const BookingModal: React.FC<BookingModalProps> = ({
   useEffect(() => {
     const calculatePricing = async () => {
       if (!teeTime || !mainMember || !open) {
+        console.log('[Pricing] Skipping calculation - missing requirements:', {
+          hasTeeTime: !!teeTime,
+          hasMainMember: !!mainMember,
+          isOpen: open,
+        });
         setPricingInfo(null);
         return;
       }
+
+      console.log('[Pricing] Starting calculation:', {
+        teeDate: teeTime.date,
+        teeTime: teeTime.startTime,
+        courseId: teeTime.courseId,
+        mainMemberId: mainMember.id,
+        membershipType: mainMember.membershipType,
+        numAdditionalPlayers: additionalMembers.length,
+      });
 
       setLoadingPricing(true);
       try {
         // Get base price items (green fee, caddy, cart)
         const priceItems = await getPriceItems();
+        console.log('[Pricing] Price items loaded:', priceItems.length);
+        
         const greenFee = priceItems.find(item => item.category === 'GREEN_FEE' && item.isActive);
         const caddy = priceItems.find(item => item.category === 'CADDY' && item.isActive);
         const cart = priceItems.find(item => item.category === 'CART' && item.isActive);
 
         // Calculate base price (sum of all active price items)
         const basePrice = (greenFee?.unitPrice || 0) + (caddy?.unitPrice || 0) + (cart?.unitPrice || 0);
+        console.log('[Pricing] Base price calculated:', {
+          basePrice,
+          greenFee: greenFee?.unitPrice || 0,
+          caddy: caddy?.unitPrice || 0,
+          cart: cart?.unitPrice || 0,
+        });
 
         // Get member segment from membership type
         const memberSegment = mapMembershipTypeToSegment(mainMember.membershipType);
+        console.log('[Pricing] Member segment:', {
+          membershipType: mainMember.membershipType,
+          mappedSegment: memberSegment,
+        });
 
         // Calculate total number of players
         const numPlayers = 1 + additionalMembers.length; // Main member + additional
 
         // Get best price with promotion
+        console.log('[Pricing] Calling getBestPrice with:', {
+          teeDate: teeTime.date,
+          teeTime: teeTime.startTime,
+          basePrice,
+          memberSegment,
+          courseId: teeTime.courseId,
+          numPlayers,
+        });
+        
         const bestPrice = await getBestPrice({
           teeDate: teeTime.date,
           teeTime: teeTime.startTime,
@@ -163,11 +198,30 @@ const BookingModal: React.FC<BookingModalProps> = ({
           numPlayers,
         });
 
+        console.log('[Pricing] Best price result:', bestPrice);
         setPricingInfo(bestPrice);
       } catch (error) {
-        console.error('Error calculating pricing:', error);
-        // Fallback to base pricing on error
-        setPricingInfo(null);
+        console.error('[Pricing] Error calculating pricing:', error);
+        // Fallback: show base pricing even on error
+        try {
+          const priceItems = await getPriceItems();
+          const greenFee = priceItems.find(item => item.category === 'GREEN_FEE' && item.isActive);
+          const caddy = priceItems.find(item => item.category === 'CADDY' && item.isActive);
+          const cart = priceItems.find(item => item.category === 'CART' && item.isActive);
+          const basePrice = (greenFee?.unitPrice || 0) + (caddy?.unitPrice || 0) + (cart?.unitPrice || 0);
+          
+          setPricingInfo({
+            finalPrice: basePrice,
+            basePrice,
+            source: 'BASE',
+            includesGreenFee: true,
+            includesCaddy: true,
+            includesCart: true,
+          });
+        } catch (fallbackError) {
+          console.error('[Pricing] Fallback pricing also failed:', fallbackError);
+          setPricingInfo(null);
+        }
       } finally {
         setLoadingPricing(false);
       }
@@ -568,57 +622,64 @@ const BookingModal: React.FC<BookingModalProps> = ({
 
           <Divider />
 
-          {/* Pricing Information */}
-          {pricingInfo && (
+          {/* Pricing Information - Always show if teeTime and mainMember exist */}
+          {(teeTime && mainMember) && (
             <Box>
               <Typography variant="subtitle2" gutterBottom>
                 Pricing
               </Typography>
-              <Box
-                sx={{
-                  p: 2,
-                  bgcolor: pricingInfo.source === 'PROMOTION' ? 'success.light' : 'action.hover',
-                  borderRadius: 1,
-                  border: '1px solid',
-                  borderColor: pricingInfo.source === 'PROMOTION' ? 'success.main' : 'divider',
-                }}
-              >
-                {pricingInfo.source === 'PROMOTION' && (
-                  <Alert severity="success" sx={{ mb: 1 }}>
-                    <Typography variant="body2" fontWeight="medium">
-                      🎉 Promotion Applied: {pricingInfo.promotionName || pricingInfo.promotionCode}
-                    </Typography>
-                  </Alert>
-                )}
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                  {pricingInfo.basePrice !== pricingInfo.finalPrice && (
-                    <Typography variant="body2" color="text.secondary">
-                      Base Price: <span style={{ textDecoration: 'line-through' }}>{pricingInfo.basePrice.toFixed(2)} THB</span>
-                    </Typography>
-                  )}
-                  <Typography variant="h6" color="primary" fontWeight="bold">
-                    Final Price: {pricingInfo.finalPrice.toFixed(2)} THB
+              {loadingPricing ? (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 2 }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="body2" color="text.secondary">
+                    Calculating pricing...
                   </Typography>
-                  <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
-                    <Typography variant="caption" color="text.secondary" display="block">
-                      Includes:
+                </Box>
+              ) : pricingInfo ? (
+                <Box
+                  sx={{
+                    p: 2,
+                    bgcolor: pricingInfo.source === 'PROMOTION' ? 'success.light' : 'action.hover',
+                    borderRadius: 1,
+                    border: '1px solid',
+                    borderColor: pricingInfo.source === 'PROMOTION' ? 'success.main' : 'divider',
+                  }}
+                >
+                  {pricingInfo.source === 'PROMOTION' && (
+                    <Alert severity="success" sx={{ mb: 1 }}>
+                      <Typography variant="body2" fontWeight="medium">
+                        🎉 Promotion Applied: {pricingInfo.promotionName || pricingInfo.promotionCode}
+                      </Typography>
+                    </Alert>
+                  )}
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                    {pricingInfo.basePrice !== pricingInfo.finalPrice && (
+                      <Typography variant="body2" color="text.secondary">
+                        Base Price: <span style={{ textDecoration: 'line-through' }}>{pricingInfo.basePrice.toFixed(2)} THB</span>
+                      </Typography>
+                    )}
+                    <Typography variant="h6" color="primary" fontWeight="bold">
+                      Final Price: {pricingInfo.finalPrice.toFixed(2)} THB
                     </Typography>
-                    <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2 }}>
-                      {pricingInfo.includesGreenFee && <li>Green Fee</li>}
-                      {pricingInfo.includesCaddy && <li>Caddy</li>}
-                      {pricingInfo.includesCart && <li>Cart</li>}
+                    <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                      <Typography variant="caption" color="text.secondary" display="block">
+                        Includes:
+                      </Typography>
+                      <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2 }}>
+                        {pricingInfo.includesGreenFee && <li>Green Fee</li>}
+                        {pricingInfo.includesCaddy && <li>Caddy</li>}
+                        {pricingInfo.includesCart && <li>Cart</li>}
+                      </Box>
                     </Box>
                   </Box>
                 </Box>
-              </Box>
-            </Box>
-          )}
-          {loadingPricing && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <CircularProgress size={16} />
-              <Typography variant="body2" color="text.secondary">
-                Calculating pricing...
-              </Typography>
+              ) : (
+                <Alert severity="info" sx={{ p: 2 }}>
+                  <Typography variant="body2">
+                    Pricing information will be calculated automatically.
+                  </Typography>
+                </Alert>
+              )}
             </Box>
           )}
 
