@@ -399,13 +399,26 @@ const BookingModal: React.FC<BookingModalProps> = ({
           },
         });
       } else {
-        // Create new booking
+        // Create new booking with pricing information
+        const numPlayers = players.length;
         await createBookingMutation.mutateAsync({
           teeTimeId: teeTime.id, // Optional - kept for backward compatibility
           date: teeTime.date,
           time: teeTime.startTime, // Use startTime from teeTime object
           players,
           notes: notes.trim() || undefined,
+          // Pass pricing information if available
+          pricingInfo: pricingInfo ? {
+            finalPrice: pricingInfo.finalPrice,
+            basePrice: pricingInfo.basePrice,
+            source: pricingInfo.source,
+            promotionCode: pricingInfo.promotionCode,
+            promotionName: pricingInfo.promotionName,
+            includesGreenFee: pricingInfo.includesGreenFee,
+            includesCaddy: pricingInfo.includesCaddy,
+            includesCart: pricingInfo.includesCart,
+            numPlayers,
+          } : undefined,
         });
       }
       // Only call onSaved on success

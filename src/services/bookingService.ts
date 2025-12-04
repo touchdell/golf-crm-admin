@@ -64,6 +64,18 @@ export interface CreateBookingRequest {
   time: string; // Required: booking time (HH:mm)
   players: BookingPlayer[];
   notes?: string;
+  // Optional: Pricing information from promotion engine
+  pricingInfo?: {
+    finalPrice: number;
+    basePrice: number;
+    source: 'PROMOTION' | 'BASE';
+    promotionCode?: string | null;
+    promotionName?: string | null;
+    includesGreenFee: boolean;
+    includesCaddy: boolean;
+    includesCart: boolean;
+    numPlayers: number; // Number of players for this booking
+  };
 }
 
 export interface UpdateBookingRequest {
@@ -554,6 +566,109 @@ export const createBooking = async (payload: CreateBookingRequest): Promise<Book
         console.error('Error inserting booking players:', playersError);
         // Don't throw - booking is created, players can be added later
         // But log the error for debugging
+      }
+    }
+
+    // ✅ NEW: Create booking items from pricing information (promotion or base pricing)
+    if (payload.pricingInfo && payload.pricingInfo.finalPrice > 0) {
+      try {
+        const numPlayers = payload.pricingInfo.numPlayers || validatedPlayers.length;
+        const finalPrice = payload.pricingInfo.finalPrice;
+        
+        console.log('[Booking] Creating booking items from pricing:', {
+          bookingId: createdBooking.id,
+          finalPrice,
+          source: payload.pricingInfo.source,
+          promotionCode: payload.pricingInfo.promotionCode,
+          numPlayers,
+        });
+
+        if (payload.pricingInfo.source === 'PROMOTION') {
+          // Promotion applies: Create a single booking item for the promotion package
+          // Insert booking item for promotion (price_item_id can be NULL for promotion packages)
+          const { error: promotionItemError } = await supabase
+            .from('booking_items')
+            .insert({
+              booking_id: createdBooking.id,
+              price_item_id: null, // NULL for promotion packages
+              quantity: numPlayers,
+              unit_price: finalPrice / numPlayers, // Price per player
+              total_price: finalPrice,
+            });
+
+          if (promotionItemError) {
+            console.error('Error creating promotion booking item:', promotionItemError);
+            // Don't throw - booking is created, items can be added manually later
+          } else {
+            console.log('[Booking] Promotion booking item created successfully');
+          }
+        } else {
+          // Base pricing: Create booking items for each included service (green fee, caddy, cart)
+          // Get price items for each category
+          const { data: priceItems, error: priceItemsError } = await supabase
+            .from('price_items')
+            .select('id, name, unit_price, category')
+            .in('category', ['GREEN_FEE', 'CADDY', 'CART'])
+            .eq('is_active', true);
+
+          if (priceItemsError) {
+            console.error('Error fetching price items for booking:', priceItemsError);
+          } else if (priceItems && priceItems.length > 0) {
+            const bookingItemsToInsert: any[] = [];
+            
+            // Create booking items for each included service, multiplied by number of players
+            priceItems.forEach((priceItem) => {
+              const category = priceItem.category as string;
+              const shouldInclude = 
+                (category === 'GREEN_FEE' && payload.pricingInfo?.includesGreenFee) ||
+                (category === 'CADDY' && payload.pricingInfo?.includesCaddy) ||
+                (category === 'CART' && payload.pricingInfo?.includesCart);
+
+              if (shouldInclude) {
+                const unitPrice = Number(priceItem.unit_price);
+                const totalPrice = unitPrice * numPlayers;
+                
+                bookingItemsToInsert.push({
+                  booking_id: createdBooking.id,
+                  price_item_id: priceItem.id,
+                  quantity: numPlayers,
+                  unit_price: unitPrice,
+                  total_price: totalPrice,
+                });
+              }
+            });
+
+            // Insert all booking items
+            if (bookingItemsToInsert.length > 0) {
+              const { error: itemsError } = await supabase
+                .from('booking_items')
+                .insert(bookingItemsToInsert);
+
+              if (itemsError) {
+                console.error('Error creating base pricing booking items:', itemsError);
+                // Don't throw - booking is created, items can be added manually later
+              } else {
+                console.log('[Booking] Base pricing booking items created successfully:', bookingItemsToInsert.length);
+              }
+            }
+          }
+        }
+
+        // Update booking total_amount to the final price
+        const { error: updateTotalError } = await supabase
+          .from('bookings')
+          .update({ total_amount: finalPrice })
+          .eq('id', createdBooking.id);
+
+        if (updateTotalError) {
+          console.error('Error updating booking total_amount:', updateTotalError);
+          // Don't throw - booking is created, total can be recalculated later
+        } else {
+          console.log('[Booking] Booking total_amount updated to:', finalPrice);
+        }
+      } catch (pricingError) {
+        console.error('Error applying pricing to booking:', pricingError);
+        // Don't throw - booking is created, pricing can be added manually later
       }
     }
 
