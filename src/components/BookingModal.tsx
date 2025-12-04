@@ -17,6 +17,7 @@ import {
 import { Delete as DeleteIcon } from '@mui/icons-material';
 import { useMembers } from '../hooks/useMembers';
 import { useCreateBooking, useUpdateBooking, useBooking, useCancelBooking } from '../hooks/useBooking';
+import { getBestPrice, mapMembershipTypeToSegment, getPriceItems, type BestPriceResult } from '../services/priceService';
 import type { TeeTime } from '../services/teeTimeService';
 import type { Member } from '../services/memberService';
 import dayjs from 'dayjs';
@@ -46,6 +47,8 @@ const BookingModal: React.FC<BookingModalProps> = ({
   const [notes, setNotes] = useState('');
   const [additionalMembersSearch, setAdditionalMembersSearch] = useState('');
   const [duplicateInCurrentBooking, setDuplicateInCurrentBooking] = useState<Member | null>(null);
+  const [pricingInfo, setPricingInfo] = useState<BestPriceResult | null>(null);
+  const [loadingPricing, setLoadingPricing] = useState(false);
   
   // ✅ FIXED: Track if we've already loaded initial booking data to prevent overwriting user changes
   const hasLoadedInitialData = useRef(false);
@@ -124,6 +127,54 @@ const BookingModal: React.FC<BookingModalProps> = ({
       console.log('Selected additional members:', additionalMembers.map(m => `${m.firstName} ${m.lastName} (${m.id})`));
     }
   }, [additionalMembers]);
+
+  // Calculate pricing when teeTime, mainMember, or additionalMembers change
+  useEffect(() => {
+    const calculatePricing = async () => {
+      if (!teeTime || !mainMember || !open) {
+        setPricingInfo(null);
+        return;
+      }
+
+      setLoadingPricing(true);
+      try {
+        // Get base price items (green fee, caddy, cart)
+        const priceItems = await getPriceItems();
+        const greenFee = priceItems.find(item => item.category === 'GREEN_FEE' && item.isActive);
+        const caddy = priceItems.find(item => item.category === 'CADDY' && item.isActive);
+        const cart = priceItems.find(item => item.category === 'CART' && item.isActive);
+
+        // Calculate base price (sum of all active price items)
+        const basePrice = (greenFee?.unitPrice || 0) + (caddy?.unitPrice || 0) + (cart?.unitPrice || 0);
+
+        // Get member segment from membership type
+        const memberSegment = mapMembershipTypeToSegment(mainMember.membershipType);
+
+        // Calculate total number of players
+        const numPlayers = 1 + additionalMembers.length; // Main member + additional
+
+        // Get best price with promotion
+        const bestPrice = await getBestPrice({
+          teeDate: teeTime.date,
+          teeTime: teeTime.startTime,
+          basePrice,
+          memberSegment,
+          courseId: teeTime.courseId,
+          numPlayers,
+        });
+
+        setPricingInfo(bestPrice);
+      } catch (error) {
+        console.error('Error calculating pricing:', error);
+        // Fallback to base pricing on error
+        setPricingInfo(null);
+      } finally {
+        setLoadingPricing(false);
+      }
+    };
+
+    calculatePricing();
+  }, [teeTime?.id, teeTime?.date, teeTime?.startTime, teeTime?.courseId, mainMember?.id, mainMember?.membershipType, additionalMembers.length, open]);
 
   /**
    * Validates and deduplicates players to ensure no duplicate members in a booking.
@@ -512,6 +563,62 @@ const BookingModal: React.FC<BookingModalProps> = ({
                   This tee time is full.
                 </Alert>
               )}
+            </Box>
+          )}
+
+          <Divider />
+
+          {/* Pricing Information */}
+          {pricingInfo && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>
+                Pricing
+              </Typography>
+              <Box
+                sx={{
+                  p: 2,
+                  bgcolor: pricingInfo.source === 'PROMOTION' ? 'success.light' : 'action.hover',
+                  borderRadius: 1,
+                  border: '1px solid',
+                  borderColor: pricingInfo.source === 'PROMOTION' ? 'success.main' : 'divider',
+                }}
+              >
+                {pricingInfo.source === 'PROMOTION' && (
+                  <Alert severity="success" sx={{ mb: 1 }}>
+                    <Typography variant="body2" fontWeight="medium">
+                      🎉 Promotion Applied: {pricingInfo.promotionName || pricingInfo.promotionCode}
+                    </Typography>
+                  </Alert>
+                )}
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                  {pricingInfo.basePrice !== pricingInfo.finalPrice && (
+                    <Typography variant="body2" color="text.secondary">
+                      Base Price: <span style={{ textDecoration: 'line-through' }}>{pricingInfo.basePrice.toFixed(2)} THB</span>
+                    </Typography>
+                  )}
+                  <Typography variant="h6" color="primary" fontWeight="bold">
+                    Final Price: {pricingInfo.finalPrice.toFixed(2)} THB
+                  </Typography>
+                  <Box sx={{ mt: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                    <Typography variant="caption" color="text.secondary" display="block">
+                      Includes:
+                    </Typography>
+                    <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2 }}>
+                      {pricingInfo.includesGreenFee && <li>Green Fee</li>}
+                      {pricingInfo.includesCaddy && <li>Caddy</li>}
+                      {pricingInfo.includesCart && <li>Cart</li>}
+                    </Box>
+                  </Box>
+                </Box>
+              </Box>
+            </Box>
+          )}
+          {loadingPricing && (
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <CircularProgress size={16} />
+              <Typography variant="body2" color="text.secondary">
+                Calculating pricing...
+              </Typography>
             </Box>
           )}
 

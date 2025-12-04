@@ -153,3 +153,131 @@ export const deletePriceItem = async (id: number): Promise<void> => {
     throw error;
   }
 };
+
+// ============================================
+// Promotion Pricing Engine
+// ============================================
+
+export type MemberSegment = 'THAI' | 'FOREIGN_WP' | 'FOREIGN_OTHER' | 'ALL';
+
+export interface BestPriceResult {
+  finalPrice: number;
+  basePrice: number;
+  source: 'PROMOTION' | 'BASE';
+  promotionCode?: string | null;
+  promotionName?: string | null;
+  includesGreenFee: boolean;
+  includesCaddy: boolean;
+  includesCart: boolean;
+}
+
+export interface GetBestPriceParams {
+  teeDate: string; // YYYY-MM-DD format
+  teeTime: string; // HH:mm format
+  basePrice: number;
+  memberSegment: MemberSegment;
+  courseId: number;
+  numPlayers: number;
+}
+
+/**
+ * Maps membership type code to member segment for promotion pricing.
+ * This is a simple mapping - you may need to adjust based on your actual membership types.
+ */
+export function mapMembershipTypeToSegment(membershipTypeCode: string | undefined | null): MemberSegment {
+  if (!membershipTypeCode) {
+    return 'ALL'; // Default to ALL if no membership type
+  }
+
+  const code = membershipTypeCode.toUpperCase();
+  
+  // Map common membership type codes to segments
+  // Adjust these mappings based on your actual membership type codes
+  if (code.includes('THAI') || code === 'TH') {
+    return 'THAI';
+  }
+  if (code.includes('WORK_PERMIT') || code.includes('WP') || code.includes('FOREIGN_WP')) {
+    return 'FOREIGN_WP';
+  }
+  if (code.includes('FOREIGN') || code.includes('INTL')) {
+    return 'FOREIGN_OTHER';
+  }
+  
+  // Default to ALL if no specific match
+  return 'ALL';
+}
+
+/**
+ * Gets the best price for a tee time booking considering all active promotions.
+ * Calls the Supabase RPC function get_best_price() which automatically selects
+ * the best matching promotion based on date, time, member segment, course, and player count.
+ */
+export async function getBestPrice(params: GetBestPriceParams): Promise<BestPriceResult> {
+  try {
+    // Ensure teeTime is in HH:mm:ss format for PostgreSQL
+    const teeTimeFormatted = params.teeTime.length === 5 
+      ? `${params.teeTime}:00` 
+      : params.teeTime;
+
+    // Call Supabase RPC function
+    const { data, error } = await supabase.rpc('get_best_price', {
+      p_tee_date: params.teeDate,
+      p_tee_time: teeTimeFormatted,
+      p_base_price: params.basePrice,
+      p_member_segment: params.memberSegment,
+      p_course_id: params.courseId,
+      p_num_players: params.numPlayers,
+    });
+
+    if (error) {
+      console.error('Error calling get_best_price RPC:', error);
+      // Fallback to base pricing on error
+      return {
+        finalPrice: params.basePrice,
+        basePrice: params.basePrice,
+        source: 'BASE',
+        includesGreenFee: true,
+        includesCaddy: true,
+        includesCart: true,
+      };
+    }
+
+    // RPC returns an array, get first result
+    const result = Array.isArray(data) && data.length > 0 ? data[0] : null;
+
+    if (!result) {
+      // No result from RPC, fallback to base pricing
+      return {
+        finalPrice: params.basePrice,
+        basePrice: params.basePrice,
+        source: 'BASE',
+        includesGreenFee: true,
+        includesCaddy: true,
+        includesCart: true,
+      };
+    }
+
+    // Map database response to BestPriceResult
+    return {
+      finalPrice: Number(result.final_price || params.basePrice),
+      basePrice: Number(result.base_price || params.basePrice),
+      source: result.source === 'PROMOTION' ? 'PROMOTION' : 'BASE',
+      promotionCode: result.promotion_code || null,
+      promotionName: result.promotion_name || null,
+      includesGreenFee: result.includes_green_fee !== false, // Default to true
+      includesCaddy: result.includes_caddy !== false, // Default to true
+      includesCart: result.includes_cart !== false, // Default to true
+    };
+  } catch (error) {
+    console.error('Error in getBestPrice:', error);
+    // Fallback to base pricing on any error
+    return {
+      finalPrice: params.basePrice,
+      basePrice: params.basePrice,
+      source: 'BASE',
+      includesGreenFee: true,
+      includesCaddy: true,
+      includesCart: true,
+    };
+  }
+}
