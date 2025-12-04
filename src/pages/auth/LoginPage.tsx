@@ -10,11 +10,14 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
+import LanguageSwitcher from '../../components/LanguageSwitcher';
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -29,7 +32,7 @@ const LoginPage: React.FC = () => {
       await login({ email, password });
       navigate('/dashboard');
     } catch (err) {
-      setError('Invalid email or password. Please try again.');
+      setError(t('auth.invalidCredentials'));
       console.error('Login error:', err);
     } finally {
       setIsLoading(false);
@@ -46,12 +49,15 @@ const LoginPage: React.FC = () => {
           justifyContent: 'center',
         }}
       >
-        <Paper sx={{ p: 4, width: '100%' }}>
+        <Paper sx={{ p: 4, width: '100%', position: 'relative' }}>
+          <Box sx={{ position: 'absolute', top: 16, right: 16 }}>
+            <LanguageSwitcher />
+          </Box>
           <Typography variant="h4" component="h1" gutterBottom align="center">
-            Golf Club Admin
+            {t('common.appName')}
           </Typography>
           <Typography variant="body2" color="text.secondary" align="center" sx={{ mb: 3 }}>
-            Sign in to continue
+            {t('auth.signInToContinue')}
           </Typography>
 
           <form onSubmit={handleSubmit}>
@@ -59,7 +65,7 @@ const LoginPage: React.FC = () => {
               {error && <Alert severity="error">{error}</Alert>}
 
               <TextField
-                label="Email"
+                label={t('auth.email')}
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -70,7 +76,7 @@ const LoginPage: React.FC = () => {
               />
 
               <TextField
-                label="Password"
+                label={t('auth.password')}
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -88,7 +94,7 @@ const LoginPage: React.FC = () => {
                 disabled={isLoading}
                 startIcon={isLoading ? <CircularProgress size={20} /> : null}
               >
-                {isLoading ? 'Signing in...' : 'Sign In'}
+                {isLoading ? t('common.signingIn') : t('common.signIn')}
               </Button>
             </Box>
           </form>

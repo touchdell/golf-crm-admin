@@ -12,34 +12,36 @@ import {
   IconButton,
 } from '@mui/material';
 import { Logout } from '@mui/icons-material';
+import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
+import LanguageSwitcher from '../components/LanguageSwitcher';
 
 const drawerWidth = 220;
-
-const getMenuItems = (isAdmin: boolean) => {
-  const items = [
-    { label: 'Dashboard', path: '/dashboard' },
-    { label: 'Members', path: '/members' },
-    { label: 'Tee Sheet', path: '/tee-sheet' },
-    { label: 'Bookings', path: '/bookings' },
-    // { label: 'Payments', path: '/payments' },
-  ];
-  
-  if (isAdmin) {
-    items.push({ label: 'Settings', path: '/settings/prices' });
-  }
-  
-  return items;
-};
 
 const MainLayout: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+  const { t } = useTranslation();
 
   const handleLogout = () => {
     logout();
     navigate('/login');
+  };
+
+  const getMenuItems = (isAdmin: boolean) => {
+    const items = [
+      { label: t('navigation.dashboard'), path: '/dashboard' },
+      { label: t('navigation.members'), path: '/members' },
+      { label: t('navigation.teeSheet'), path: '/tee-sheet' },
+      { label: t('navigation.bookings'), path: '/bookings' },
+    ];
+    
+    if (isAdmin) {
+      items.push({ label: t('navigation.settings'), path: '/settings/prices' });
+    }
+    
+    return items;
   };
 
   return (
@@ -51,10 +53,11 @@ const MainLayout: React.FC = () => {
       >
         <Toolbar>
           <Typography variant="h6" noWrap component="div" sx={{ flexGrow: 1 }}>
-            Golf Club Admin
+            {t('common.appName')}
           </Typography>
           {user && (
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+              <LanguageSwitcher />
               <Typography variant="body2" sx={{ display: { xs: 'none', sm: 'block' } }}>
                 {user.name}
               </Typography>
