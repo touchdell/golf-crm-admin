@@ -16,6 +16,7 @@ import SettingsLayout from '../pages/settings/SettingsLayout';
 import PricesPage from '../pages/settings/PricesPage';
 import MembershipTypesPage from '../pages/settings/MembershipTypesPage';
 import TeeTimeConfigPage from '../pages/settings/TeeTimeConfigPage';
+import PromotionsPage from '../pages/settings/PromotionsPage';
 
 const AppRouter: React.FC = () => {
   return (
@@ -52,6 +53,7 @@ const AppRouter: React.FC = () => {
           <Route path="prices" element={<PricesPage />} />
           <Route path="membership-types" element={<MembershipTypesPage />} />
           <Route path="tee-times" element={<TeeTimeConfigPage />} />
+          <Route path="promotions" element={<PromotionsPage />} />
           <Route index element={<Navigate to="/settings/prices" replace />} />
         </Route>
         {/* add more: /payments, /reports */}

@@ -8,6 +8,7 @@ const SettingsLayout: React.FC = () => {
   const getTabValue = () => {
     if (location.pathname.includes('/membership-types')) return 1;
     if (location.pathname.includes('/tee-times')) return 2;
+    if (location.pathname.includes('/promotions')) return 3;
     return 0; // prices
   };
 
@@ -32,6 +33,12 @@ const SettingsLayout: React.FC = () => {
             component={Link}
             to="/settings/tee-times"
             value={2}
+          />
+          <Tab
+            label="Promotions"
+            component={Link}
+            to="/settings/promotions"
+            value={3}
           />
         </Tabs>
       </Paper>
