@@ -16,12 +16,15 @@ import {
   DialogActions,
   Snackbar,
 } from '@mui/material';
-import { Close, Cancel, Payment } from '@mui/icons-material';
+import { Close, Cancel, Payment, Add, Delete } from '@mui/icons-material';
 import dayjs from 'dayjs';
-import { useBooking, useCancelBooking } from '../hooks/useBooking';
+import { useBooking, useCancelBooking, useUpdateBooking } from '../hooks/useBooking';
 import { usePaymentsByBooking } from '../hooks/usePayment';
 import PaymentModal from './PaymentModal';
+import { getPriceItems, type PriceItem } from '../services/priceService';
+import { addBookingItem, removeBookingItem } from '../services/bookingService';
 import type { BookingDetail } from '../services/bookingService';
+import { Autocomplete, Select, MenuItem, FormControl, InputLabel } from '@mui/material';
 
 interface BookingDetailDrawerProps {
   open: boolean;
@@ -39,12 +42,17 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
   const { data: booking, isLoading, isError, refetch: refetchBooking } = useBooking(bookingId);
   const { data: payments, isLoading: paymentsLoading, refetch: refetchPayments } = usePaymentsByBooking(bookingId);
   const cancelBookingMutation = useCancelBooking();
+  const updateBookingMutation = useUpdateBooking();
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error'>('success');
+  const [priceItems, setPriceItems] = useState<PriceItem[]>([]);
+  const [selectedPriceItem, setSelectedPriceItem] = useState<PriceItem | null>(null);
+  const [quantity, setQuantity] = useState<number>(1);
+  const [addingItem, setAddingItem] = useState(false);
 
   const handleCancelClick = () => {
     setCancelDialogOpen(true);
@@ -114,6 +122,70 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
     booking.status !== 'CANCELLED' &&
     booking.status !== 'COMPLETED';
 
+  // Load price items when drawer opens
+  useEffect(() => {
+    if (open) {
+      loadPriceItems();
+    }
+  }, [open]);
+
+  const loadPriceItems = async () => {
+    try {
+      const items = await getPriceItems();
+      // Filter only active items
+      setPriceItems(items.filter(item => item.isActive));
+    } catch (error) {
+      console.error('Error loading price items:', error);
+    }
+  };
+
+  const handleAddItem = async () => {
+    if (!bookingId || !selectedPriceItem) return;
+
+    try {
+      setAddingItem(true);
+      await addBookingItem({
+        bookingId,
+        priceItemId: selectedPriceItem.id,
+        quantity,
+      });
+      setSnackbarMessage('Product added successfully!');
+      setSnackbarSeverity('success');
+      setSnackbarOpen(true);
+      setSelectedPriceItem(null);
+      setQuantity(1);
+      refetchBooking();
+      onChanged?.();
+    } catch (error: any) {
+      setSnackbarMessage(error?.message || 'Failed to add product');
+      setSnackbarSeverity('error');
+      setSnackbarOpen(true);
+    } finally {
+      setAddingItem(false);
+    }
+  };
+
+  const handleRemoveItem = async (itemId: number) => {
+    if (!bookingId) return;
+
+    if (!window.confirm('Are you sure you want to remove this item?')) {
+      return;
+    }
+
+    try {
+      await removeBookingItem(itemId, bookingId);
+      setSnackbarMessage('Product removed successfully!');
+      setSnackbarSeverity('success');
+      setSnackbarOpen(true);
+      refetchBooking();
+      onChanged?.();
+    } catch (error: any) {
+      setSnackbarMessage(error?.message || 'Failed to remove product');
+      setSnackbarSeverity('error');
+      setSnackbarOpen(true);
+    }
+  };
+
   // Debug logging
   useEffect(() => {
     if (booking) {
@@ -128,10 +200,10 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
 
   const getStatusColor = (status?: BookingDetail['status']) => {
     switch (status) {
-      case 'CONFIRMED':
+      case 'BOOKED':
+        return 'primary';
+      case 'CHECKED_IN':
         return 'success';
-      case 'PENDING':
-        return 'warning';
       case 'CANCELLED':
         return 'error';
       case 'COMPLETED':
@@ -214,12 +286,47 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
                 <Typography variant="subtitle2" color="text.secondary" gutterBottom sx={{ mt: 2 }}>
                   Status
                 </Typography>
-                <Chip
-                  label={booking.status}
-                  size="small"
-                  color={getStatusColor(booking.status)}
-                  sx={{ mb: 2 }}
-                />
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                  <Chip
+                    label={booking.status}
+                    size="small"
+                    color={getStatusColor(booking.status)}
+                  />
+                  <FormControl size="small" sx={{ minWidth: 180 }}>
+                    <InputLabel>Change Status</InputLabel>
+                    <Select
+                      value={booking.status}
+                      label="Change Status"
+                      onChange={async (e) => {
+                        const newStatus = e.target.value as BookingDetail['status'];
+                        if (!bookingId || newStatus === booking.status) return;
+                        
+                        try {
+                          await updateBookingMutation.mutateAsync({
+                            id: bookingId,
+                            payload: { status: newStatus },
+                          });
+                          setSnackbarMessage(`Booking status updated to ${newStatus} successfully!`);
+                          setSnackbarSeverity('success');
+                          setSnackbarOpen(true);
+                          refetchBooking();
+                          onChanged?.();
+                        } catch (error) {
+                          setSnackbarMessage('Failed to update booking status. Please try again.');
+                          setSnackbarSeverity('error');
+                          setSnackbarOpen(true);
+                        }
+                      }}
+                      disabled={updateBookingMutation.isPending || cancelBookingMutation.isPending}
+                    >
+                      <MenuItem value="BOOKED">Booked</MenuItem>
+                      <MenuItem value="CHECKED_IN">Checked In</MenuItem>
+                      <MenuItem value="COMPLETED">Completed</MenuItem>
+                      <MenuItem value="NO_SHOW">No Show</MenuItem>
+                      <MenuItem value="CANCELLED">Cancelled</MenuItem>
+                    </Select>
+                  </FormControl>
+                </Box>
 
                 <Typography variant="subtitle2" color="text.secondary" gutterBottom>
                   Created At
@@ -301,52 +408,136 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
                 </>
               )}
 
-              {/* Charges */}
-              {booking.charges && booking.charges.length > 0 && (
-                <>
-                  <Divider sx={{ my: 3 }} />
-                  <Box sx={{ mb: 3 }}>
-                    <Typography variant="subtitle1" gutterBottom>
-                      Charges
+              {/* Charges/Products */}
+              <Divider sx={{ my: 3 }} />
+              <Box sx={{ mb: 3 }}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Products & Charges
+                </Typography>
+
+                {/* Add Product Section */}
+                {booking.status !== 'CANCELLED' && booking.status !== 'COMPLETED' && (
+                  <Box sx={{ mb: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
+                    <Typography variant="body2" color="text.secondary" gutterBottom>
+                      Add Product/Service
                     </Typography>
-                    <Box sx={{ pl: 2 }}>
-                      {booking.charges.map((charge) => (
-                        <Box
-                          key={charge.id}
-                          sx={{
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            mb: 1,
-                          }}
-                        >
+                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                      <Autocomplete
+                        options={priceItems}
+                        getOptionLabel={(option) => `${option.name} - ${formatCurrency(option.unitPrice)}`}
+                        value={selectedPriceItem}
+                        onChange={(_, newValue) => setSelectedPriceItem(newValue)}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Select Product"
+                            size="small"
+                            sx={{ flex: '1 1 200px', minWidth: 200 }}
+                          />
+                        )}
+                        renderOption={(props, option) => (
+                          <Box component="li" {...props}>
+                            <Box>
+                              <Typography variant="body2">{option.name}</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {option.code} • {formatCurrency(option.unitPrice)}
+                              </Typography>
+                            </Box>
+                          </Box>
+                        )}
+                      />
+                      <TextField
+                        label="Quantity"
+                        type="number"
+                        size="small"
+                        value={quantity}
+                        onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                        inputProps={{ min: 1 }}
+                        sx={{ width: 100 }}
+                      />
+                      <Button
+                        variant="contained"
+                        size="small"
+                        onClick={handleAddItem}
+                        disabled={!selectedPriceItem || addingItem}
+                        startIcon={addingItem ? <CircularProgress size={16} /> : <Add />}
+                      >
+                        {addingItem ? 'Adding...' : 'Add'}
+                      </Button>
+                    </Box>
+                  </Box>
+                )}
+
+                {/* Charges List */}
+                {booking.charges && booking.charges.length > 0 ? (
+                  <Box sx={{ pl: 2 }}>
+                    {booking.charges.map((charge) => (
+                      <Box
+                        key={charge.id}
+                        sx={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          mb: 1,
+                          p: 1,
+                          borderRadius: 1,
+                          '&:hover': {
+                            bgcolor: 'action.hover',
+                          },
+                        }}
+                      >
+                        <Box>
                           <Typography variant="body2">{charge.description}</Typography>
-                          <Typography variant="body2">
+                          {charge.quantity && charge.quantity > 1 && charge.unitPrice && (
+                            <Typography variant="caption" color="text.secondary">
+                              {charge.quantity} × {formatCurrency(charge.unitPrice)}
+                            </Typography>
+                          )}
+                        </Box>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                          <Typography variant="body2" fontWeight="medium">
                             {charge.type === 'REFUND' ? '-' : ''}
                             {formatCurrency(charge.amount)}
                           </Typography>
+                          {booking.status !== 'CANCELLED' && booking.status !== 'COMPLETED' && (
+                            <IconButton
+                              size="small"
+                              color="error"
+                              onClick={() => handleRemoveItem(charge.id)}
+                              sx={{ ml: 1 }}
+                            >
+                              <Delete fontSize="small" />
+                            </IconButton>
+                          )}
                         </Box>
-                      ))}
-                      {booking.totalAmount !== undefined && (
-                        <>
-                          <Divider sx={{ my: 1 }} />
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              fontWeight: 'bold',
-                            }}
-                          >
-                            <Typography variant="body1">Total</Typography>
-                            <Typography variant="body1">
-                              {formatCurrency(booking.totalAmount)}
-                            </Typography>
-                          </Box>
-                        </>
-                      )}
-                    </Box>
+                      </Box>
+                    ))}
+                    {booking.totalAmount !== undefined && (
+                      <>
+                        <Divider sx={{ my: 1 }} />
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            fontWeight: 'bold',
+                          }}
+                        >
+                          <Typography variant="body1">Total</Typography>
+                          <Typography variant="body1">
+                            {formatCurrency(booking.totalAmount)}
+                          </Typography>
+                        </Box>
+                      </>
+                    )}
                   </Box>
-                </>
-              )}
+                ) : (
+                  <Box sx={{ pl: 2 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No products/charges added yet
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
 
               {/* Payment Summary */}
               <Divider sx={{ my: 3 }} />
@@ -460,18 +651,29 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
               {/* Action Buttons */}
               <Divider sx={{ my: 3 }} />
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {/* Always show Record Payment button if booking exists and not cancelled */}
-                {booking && booking.status !== 'CANCELLED' && (
+                {/* Show Mark as Paid button if booking exists and not cancelled */}
+                {booking && booking.status !== 'CANCELLED' && booking.status !== 'COMPLETED' && (
                   <Button
                     variant="contained"
                     color="primary"
                     startIcon={<Payment />}
                     onClick={handleRecordPaymentClick}
                     fullWidth
-                    disabled={outstandingAmount <= 0}
+                    disabled={updateBookingMutation.isPending || cancelBookingMutation.isPending}
                   >
-                    Record Payment {outstandingAmount > 0 ? `(${formatCurrency(outstandingAmount)} outstanding)` : '(Fully Paid)'}
+                    {outstandingAmount > 0 
+                      ? `Mark as Paid (${formatCurrency(outstandingAmount)} outstanding)`
+                      : 'Record Payment'
+                    }
                   </Button>
+                )}
+                {/* Show payment status if fully paid */}
+                {booking && booking.paymentStatus === 'PAID' && outstandingAmount <= 0 && (
+                  <Chip
+                    label="PAID"
+                    color="success"
+                    sx={{ alignSelf: 'center' }}
+                  />
                 )}
                 {canCancel && (
                   <Button
@@ -480,6 +682,7 @@ const BookingDetailDrawer: React.FC<BookingDetailDrawerProps> = ({
                     startIcon={<Cancel />}
                     onClick={handleCancelClick}
                     fullWidth
+                    disabled={updateBookingMutation.isPending || cancelBookingMutation.isPending}
                   >
                     Cancel Booking
                   </Button>

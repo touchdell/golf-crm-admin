@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -14,8 +14,9 @@ import {
   Alert,
   Divider,
 } from '@mui/material';
+import { Delete as DeleteIcon } from '@mui/icons-material';
 import { useMembers } from '../hooks/useMembers';
-import { useCreateBooking } from '../hooks/useBooking';
+import { useCreateBooking, useUpdateBooking, useBooking, useCancelBooking } from '../hooks/useBooking';
 import type { TeeTime } from '../services/teeTimeService';
 import type { Member } from '../services/memberService';
 import dayjs from 'dayjs';
@@ -24,6 +25,9 @@ interface BookingModalProps {
   open: boolean;
   onClose: () => void;
   teeTime: TeeTime | null;
+  mainMember: Member | null; // Fixed main member - required and not selectable
+  existingMemberIds?: number[]; // Members already booked in this slot (from other bookings)
+  bookingId?: number | null; // Optional: if provided, edit mode is enabled
   onSaved?: () => void;
   onError?: (error: Error) => void;
 }
@@ -32,22 +36,22 @@ const BookingModal: React.FC<BookingModalProps> = ({
   open,
   onClose,
   teeTime,
+  mainMember, // Fixed main member from props
+  existingMemberIds = [], // Members already part of this tee time (any booking)
+  bookingId = null, // Optional: if provided, edit mode is enabled
   onSaved,
   onError,
 }) => {
-  const [mainMember, setMainMember] = useState<Member | null>(null);
   const [additionalMembers, setAdditionalMembers] = useState<Member[]>([]);
   const [notes, setNotes] = useState('');
-  const [mainMemberSearch, setMainMemberSearch] = useState('');
   const [additionalMembersSearch, setAdditionalMembersSearch] = useState('');
-
-  // Fetch members for autocomplete - use separate queries to prevent interference
-  const { data: mainMembersData, isLoading: mainMembersLoading } = useMembers(
-    1,
-    50,
-    mainMemberSearch,
-  );
+  const [duplicateInCurrentBooking, setDuplicateInCurrentBooking] = useState<Member | null>(null);
   
+  // ✅ FIXED: Track if we've already loaded initial booking data to prevent overwriting user changes
+  const hasLoadedInitialData = useRef(false);
+  const lastBookingIdRef = useRef<number | null>(null);
+
+  // Fetch members for additional players only (main member is fixed from props)
   const { data: additionalMembersData, isLoading: additionalMembersLoading } = useMembers(
     1,
     50,
@@ -55,43 +59,264 @@ const BookingModal: React.FC<BookingModalProps> = ({
   );
 
   const createBookingMutation = useCreateBooking();
+  const updateBookingMutation = useUpdateBooking();
+  const cancelBookingMutation = useCancelBooking();
+  const isEditMode = !!bookingId;
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  
+  // Load existing booking data when in edit mode
+  const { data: existingBooking, isLoading: loadingBooking } = useBooking(bookingId);
 
   // Reset form when modal opens/closes or teeTime changes
-  // ✅ FIXED: Only depend on open and teeTime.id, NOT on form state
   useEffect(() => {
     if (open && teeTime) {
-      setMainMember(null);
-      setAdditionalMembers([]); // Always an array, never undefined
-      setNotes('');
-      setMainMemberSearch('');
+      // ✅ FIXED: Only load initial data when modal opens or bookingId changes
+      // Don't reload if existingBooking refetches - this would overwrite user changes
+      const bookingIdChanged = lastBookingIdRef.current !== bookingId;
+      
+      if (bookingId && existingBooking && (!hasLoadedInitialData.current || bookingIdChanged)) {
+        // Edit mode: pre-populate with existing booking data (only on initial load)
+        console.log('🔄 Loading initial booking data for edit mode:', bookingId);
+        const existingPlayers = existingBooking.players || [];
+        const additionalPlayers = existingPlayers.filter(p => !p.isMainPlayer);
+        
+        // Map additional players to Member objects using booking data
+        const mappedAdditional = additionalPlayers.map(player => {
+          // Parse memberName (format: "FirstName LastName")
+          const nameParts = player.memberName.split(' ');
+          const firstName = nameParts[0] || player.memberName;
+          const lastName = nameParts.slice(1).join(' ') || '';
+          
+          return {
+            id: player.memberId,
+            firstName,
+            lastName,
+            memberCode: player.memberCode,
+            membershipType: '', // Not available in booking data
+            membershipStatus: 'ACTIVE' as const, // Default
+          };
+        });
+        
+        console.log('🔄 Setting initial additionalMembers:', mappedAdditional.map(m => ({ id: m.id, name: `${m.firstName} ${m.lastName}` })));
+        setAdditionalMembers(mappedAdditional);
+        setNotes(existingBooking.notes || '');
+        hasLoadedInitialData.current = true;
+        lastBookingIdRef.current = bookingId;
+      } else if (!bookingId) {
+        // Create mode: reset form
+        setAdditionalMembers([]);
+        setNotes('');
+        hasLoadedInitialData.current = false;
+        lastBookingIdRef.current = null;
+      }
       setAdditionalMembersSearch('');
+      setDuplicateInCurrentBooking(null); // Reset duplicate error
+    } else if (!open) {
+      // Modal closed: reset flags
+      hasLoadedInitialData.current = false;
+      lastBookingIdRef.current = null;
     }
-  }, [open, teeTime?.id]); // Only reset when modal opens or teeTime ID changes
+  }, [open, teeTime?.id, bookingId, existingBooking]); // Keep existingBooking in deps for initial load, but use ref to prevent overwriting changes
+  
+  // ✅ DEBUG: Log when additionalMembers changes
+  useEffect(() => {
+    if (additionalMembers.length > 0) {
+      console.log('Selected additional members:', additionalMembers.map(m => `${m.firstName} ${m.lastName} (${m.id})`));
+    }
+  }, [additionalMembers]);
+
+  /**
+   * Validates and deduplicates players to ensure no duplicate members in a booking.
+   * Throws an error if duplicates are found.
+   */
+  const validateAndDeduplicatePlayers = (
+    mainMember: Member,
+    additionalMembers: Member[]
+  ): Array<{ memberId: number; isMainPlayer: boolean }> => {
+    // Track all member IDs
+    const seenMemberIds = new Set<number>();
+    const duplicateMemberIds: number[] = [];
+    const players: Array<{ memberId: number; isMainPlayer: boolean }> = [];
+
+    // Add main member first
+    if (mainMember?.id) {
+      seenMemberIds.add(mainMember.id);
+      players.push({
+        memberId: mainMember.id,
+        isMainPlayer: true,
+      });
+    }
+
+    // Process additional members
+    for (const member of additionalMembers) {
+      if (!member?.id) {
+        continue; // Skip invalid members
+      }
+
+      // Check for duplicates
+      if (seenMemberIds.has(member.id)) {
+        duplicateMemberIds.push(member.id);
+        continue; // Skip duplicate
+      }
+
+      // Check if additional member is the same as main member
+      if (member.id === mainMember?.id) {
+        duplicateMemberIds.push(member.id);
+        continue; // Skip - main member cannot be additional
+      }
+
+      // Add to seen set and players array
+      seenMemberIds.add(member.id);
+      players.push({
+        memberId: member.id,
+        isMainPlayer: false,
+      });
+    }
+
+    // If duplicates found, throw error
+    if (duplicateMemberIds.length > 0) {
+      const duplicateMembers = additionalMembers
+        .filter(m => duplicateMemberIds.includes(m.id))
+        .map(m => `${m.firstName} ${m.lastName} (${m.memberCode})`)
+        .join(', ');
+      
+      throw new Error(
+        `Duplicate members detected: ${duplicateMembers}. ` +
+        `Each member can only appear once per booking.`
+      );
+    }
+
+    return players;
+  };
 
   const handleSubmit = async () => {
-    if (!teeTime || !mainMember) return;
+    if (!teeTime) {
+      console.error('Cannot save booking: No tee time selected');
+      return;
+    }
 
-    const allMembers = [mainMember, ...additionalMembers];
-    const players = allMembers.map((member, index) => ({
-      memberId: member.id,
-      isMainPlayer: index === 0,
-    }));
+    if (!mainMember) {
+      console.error('Cannot save booking: No main member provided');
+      onError?.(new Error('No main member selected. Please select a member before booking.'));
+      return;
+    }
+
+    const isEditMode = !!bookingId;
+    const existingMemberIdSet = new Set(existingMemberIds);
+    
+    // ✅ DEBUG: Log current state before processing
+    console.log('🔍 handleSubmit - Current state:', {
+      additionalMembersCount: additionalMembers.length,
+      additionalMembers: additionalMembers.map(m => ({ id: m.id, name: `${m.firstName} ${m.lastName}` })),
+      mainMember: { id: mainMember.id, name: `${mainMember.firstName} ${mainMember.lastName}` },
+      isEditMode,
+    });
+    
+    // ✅ FIXED: Client-side validation - Check if main member is duplicate
+    // In edit mode, skip this check if the main member is the same as the existing booking's main member
+    if (!isEditMode && existingMemberIdSet.has(mainMember.id)) {
+      const errorMsg = `Member ${mainMember.firstName} ${mainMember.lastName} (${mainMember.memberCode}) is already a main member in another booking for this tee time slot. Please select a different member.`;
+      console.error('Duplicate main member detected:', mainMember.id);
+      onError?.(new Error(errorMsg));
+      return;
+    }
+
+    // ✅ VALIDATE: Ensure no duplicate members within this booking
+    let players: Array<{ memberId: number; isMainPlayer: boolean }>;
+    try {
+      console.log('🔍 Calling validateAndDeduplicatePlayers with:', {
+        mainMemberId: mainMember.id,
+        additionalMembersCount: additionalMembers.length,
+        additionalMembersIds: additionalMembers.map(m => m.id),
+      });
+      players = validateAndDeduplicatePlayers(mainMember, additionalMembers);
+      console.log('✅ validateAndDeduplicatePlayers returned:', {
+        playersCount: players.length,
+        players: players.map(p => ({ memberId: p.memberId, isMainPlayer: p.isMainPlayer })),
+      });
+    } catch (error) {
+      // Validation error - show to user
+      const errorMessage = error instanceof Error ? error.message : 'Duplicate members detected in booking';
+      console.error('Player validation error:', errorMessage);
+      onError?.(error instanceof Error ? error : new Error(errorMessage));
+      return;
+    }
+
+    // ✅ VALIDATE: Check if any players are already booked in OTHER bookings for this slot
+    // In edit mode, exclude current booking's players from duplicate check
+    const currentBookingPlayerIds = isEditMode && existingBooking 
+      ? new Set(existingBooking.players.map(p => p.memberId))
+      : new Set<number>();
+    
+    const excludedMemberIdsSet = new Set(existingMemberIds);
+    
+    // Check for conflicts with other bookings (not this booking in edit mode)
+    const conflictingPlayers = players.filter((p) => {
+      // In edit mode, allow players that are already in this booking
+      if (isEditMode && currentBookingPlayerIds.has(p.memberId)) {
+        return false; // Not a conflict if it's already in this booking
+      }
+      // Check if this member is already booked in another booking
+      return excludedMemberIdsSet.has(p.memberId);
+    });
+
+    if (conflictingPlayers.length > 0) {
+      const conflictingMemberIds = conflictingPlayers.map(p => p.memberId);
+      const conflictingMemberNames = additionalMembers
+        .filter(m => conflictingMemberIds.includes(m.memberId))
+        .map(m => `${m.firstName} ${m.lastName} (${m.memberCode})`)
+        .join(', ');
+      
+      const errorMsg = `The following members are already booked in another booking for this slot and cannot be added: ${conflictingMemberNames}`;
+      console.error('Conflicting members detected:', conflictingMemberIds);
+      onError?.(new Error(errorMsg));
+      return;
+    }
+
+    console.log(`${isEditMode ? 'Updating' : 'Creating'} booking with:`, {
+      bookingId: bookingId || 'new',
+      teeTime: teeTime.id,
+      date: teeTime.date,
+      time: teeTime.startTime,
+      players: players.length,
+      mainMember: mainMember.id,
+      playerIds: players.map((p) => p.memberId),
+    });
 
     try {
-      await createBookingMutation.mutateAsync({
-        teeTimeId: teeTime.id, // Optional - kept for backward compatibility
-        date: teeTime.date,
-        time: teeTime.startTime, // Use startTime from teeTime object
-        players,
-        notes: notes.trim() || undefined,
-      });
+      if (isEditMode && bookingId) {
+        // Update existing booking
+        await updateBookingMutation.mutateAsync({
+          id: bookingId,
+          payload: {
+            players,
+            notes: notes.trim() || undefined,
+          },
+        });
+      } else {
+        // Create new booking
+        await createBookingMutation.mutateAsync({
+          teeTimeId: teeTime.id, // Optional - kept for backward compatibility
+          date: teeTime.date,
+          time: teeTime.startTime, // Use startTime from teeTime object
+          players,
+          notes: notes.trim() || undefined,
+        });
+      }
       // Only call onSaved on success
       onSaved?.();
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       // Error is handled by the mutation and UI (isError state)
+      console.error(`Booking ${isEditMode ? 'update' : 'creation'} error:`, error);
+      const errorMessage = error?.message || error?.toString() || 'Unknown error occurred';
+      console.error('Error details:', {
+        error,
+        message: errorMessage,
+        stack: error?.stack,
+      });
       // Also notify parent component
-      onError?.(error as Error);
+      onError?.(error instanceof Error ? error : new Error(errorMessage));
       // Don't close modal on error so user can retry
     }
   };
@@ -102,42 +327,163 @@ const BookingModal: React.FC<BookingModalProps> = ({
     }
   };
 
-  // ✅ FIXED: Compute dynamic counts from current selection (not static teeTime data)
+  // ✅ FIXED: Compute dynamic counts based on existing players + new selections
   const maxPlayers = teeTime?.maxPlayers || 0;
+
+  // How many players were already booked in this tee time (before opening modal)
+  const originalAvailableSlots = teeTime
+    ? teeTime.maxPlayers - teeTime.bookedPlayersCount
+    : 0;
+
+  // Members already in this tee-time group (from any existing booking)
+  const existingMemberIdSet = new Set(existingMemberIds);
+  
+  // Calculate remaining slots (accounting for edit mode)
+  const allSelectedPlayerIds = new Set([
+    mainMember?.id,
+    ...additionalMembers.map(m => m.id)
+  ].filter((id): id is number => id !== undefined));
+  
+  let remainingSlots: number;
+  if (isEditMode && existingBooking) {
+    // Edit mode: calculate net change (players being added - players being removed)
+    const currentPlayerIds = new Set(existingBooking.players.map(p => p.memberId));
+    const playersBeingAdded = Array.from(allSelectedPlayerIds).filter(
+      id => !currentPlayerIds.has(id)
+    ).length;
+    const playersBeingRemoved = Array.from(currentPlayerIds).filter(
+      id => !allSelectedPlayerIds.has(id)
+    ).length;
+    const netChange = playersBeingAdded - playersBeingRemoved;
+    remainingSlots = Math.max(0, originalAvailableSlots - netChange);
+  } else {
+    // Create mode: count new players being added
+    const newPlayersCount = Array.from(allSelectedPlayerIds).filter(
+      id => !existingMemberIdSet.has(id)
+    ).length;
+    remainingSlots = Math.max(0, originalAvailableSlots - newPlayersCount);
+  }
+
+  // Selection count for UI (main + additional in this modal)
   const selectedCount = (mainMember ? 1 : 0) + additionalMembers.length;
-  const remainingSlots = maxPlayers - selectedCount;
-  
-  // Original availability before opening modal (for reference)
-  const originalAvailableSlots = teeTime ? teeTime.maxPlayers - teeTime.bookedPlayersCount : 0;
-  
-  const maxAdditionalPlayers = Math.max(0, maxPlayers - (mainMember ? 1 : 0));
+
+  // ✅ FIXED: Calculate max additional players correctly
+  // In create mode: Calculate based on original available slots minus main member (if main member is new)
+  // In edit mode: Can have up to maxPlayers total (replacing existing booking)
+  const maxAdditionalPlayers = isEditMode 
+    ? Math.max(0, maxPlayers - 1) // Edit mode: can have up to maxPlayers total (minus main member)
+    : (() => {
+        // Create mode: Calculate based on original available slots
+        // If main member is already booked in this slot, they don't consume a new slot
+        const mainMemberConsumesSlot = mainMember && !existingMemberIdSet.has(mainMember.id);
+        return Math.max(0, originalAvailableSlots - (mainMemberConsumesSlot ? 1 : 0));
+      })();
 
   // ✅ FIXED: Ensure options array is stable - use raw items, no object rebuilding
-  // Filter out main member, but keep selected additional members in options
-  // (Autocomplete needs selected values to be in options array)
+  // Filter out:
+  //  - main member (NEVER allow main member as additional player)
+  //  - members already selected as additional (prevent duplicates within current selection)
+  //  - members already booked in this tee time (existingMemberIds from other bookings)
   const allAdditionalMembers = additionalMembersData?.items || [];
-  const selectedMemberIds = new Set(additionalMembers.map(m => m.id));
+  const selectedMemberIds = new Set(additionalMembers.map((m) => m.id));
   
-  // ✅ FIXED: Build stable options array - include selected members first, then available ones
-  // Do NOT rebuild objects - use raw Member objects from query
+  // ✅ FIXED: Create a comprehensive exclusion set that includes main member
+  const excludedMemberIdsSet = new Set<number>();
+  // Add existing member IDs (from other bookings in this slot)
+  existingMemberIds.forEach((id) => excludedMemberIdsSet.add(id));
+  
+  // In edit mode, get current booking's player IDs
+  const currentBookingPlayerIds = isEditMode && existingBooking 
+    ? new Set(existingBooking.players.map(p => p.memberId))
+    : new Set<number>();
+  
+  // In edit mode, exclude current booking's players from exclusion set for OTHER bookings
+  // BUT we still want to exclude them from the dropdown to prevent re-adding them
+  // (they're already in the booking, so they'll show as selected chips)
+  
+  // Add main member ID explicitly (ALWAYS exclude from dropdown)
+  if (mainMember?.id) {
+    excludedMemberIdsSet.add(mainMember.id);
+  }
+  
+  // ✅ FIXED: Check if main member is already booked in this slot (separate from excludedMemberIdsSet)
+  // This is used to prevent duplicate main members, not for filtering dropdown options
+  // Note: existingMemberIdSet is already defined above (line 176), reuse it here
+  const isMainMemberDuplicate = mainMember ? existingMemberIdSet.has(mainMember.id) : false;
+  
+  // ✅ FIXED: Build options array - Include selected members so MUI can manage them properly
+  // MUI Autocomplete multiple mode needs selected options to remain in the options array
+  // We'll use isOptionDisabled to prevent re-selection instead of filtering them out
+  const filteredOptions = allAdditionalMembers.filter(
+    (m) => {
+      const isMainMember = m.id === mainMember?.id;
+      const isExcluded = excludedMemberIdsSet.has(m.id);
+      // In edit mode, also exclude current booking's players (they're already in the booking)
+      const isCurrentBookingPlayer = isEditMode && currentBookingPlayerIds.has(m.id);
+      
+      // Exclude if: main member, excluded from other bookings, or already in current booking
+      // DO NOT exclude selected members - MUI needs them in the options array
+      return !isMainMember && !isExcluded && !isCurrentBookingPlayer;
+    }
+  );
+  
+  // ✅ CRITICAL FIX: Ensure selected members are always in options array
+  // MUI Autocomplete needs selected values to exist in options for proper matching
+  // Create a Set of option IDs for quick lookup
+  const optionIdsSet = new Set(filteredOptions.map(m => m.id));
+  
+  // Add any selected members that aren't in the filtered options
   const additionalMembersOptions = [
-    // Include already selected members first (so they stay in the list)
-    ...additionalMembers,
-    // Then add other members that aren't the main member and aren't already selected
-    ...allAdditionalMembers.filter(
-      (m) =>
-        m.id !== mainMember?.id &&
-        !selectedMemberIds.has(m.id),
-    ),
+    ...filteredOptions,
+    ...additionalMembers.filter(m => !optionIdsSet.has(m.id))
   ];
+  
+  // ✅ NEW: Check if any selected additional members are duplicates or main member
+  // This includes:
+  // 1. Main member appearing in additional members
+  // 2. Members already booked in other bookings
+  // 3. Duplicate members within additionalMembers array itself
+  const seenMemberIds = new Set<number>();
+  const duplicateAdditionalMembers = additionalMembers.filter(
+    (m, index) => {
+      // Check if this member is the main member
+      if (m.id === mainMember?.id) {
+        return true; // Main member cannot be additional
+      }
+      
+      // Check if this member is already booked in other bookings
+      if (excludedMemberIdsSet.has(m.id)) {
+        return true; // Already booked elsewhere
+      }
+      
+      // In edit mode, allow players that are already in this booking (they're being kept)
+      if (isEditMode && currentBookingPlayerIds.has(m.id)) {
+        return false; // Not a duplicate if it's already in this booking
+      }
+      
+      // Check for duplicates within additionalMembers array
+      if (seenMemberIds.has(m.id)) {
+        return true; // Duplicate within the same array
+      }
+      seenMemberIds.add(m.id);
+      
+      return false;
+    }
+  );
+
+  const isPending = isEditMode ? updateBookingMutation.isPending : createBookingMutation.isPending;
+  const hasError = isEditMode ? updateBookingMutation.isError : createBookingMutation.isError;
+  const error = isEditMode ? updateBookingMutation.error : createBookingMutation.error;
 
   // ✅ FIXED: No dynamic key props - Dialog key is stable
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
       <DialogTitle>
-        {teeTime
-          ? `Book Tee Time: ${teeTime.startTime} - ${teeTime.endTime}`
-          : 'Create Booking'}
+        {isEditMode
+          ? `Edit Booking: ${teeTime?.startTime} - ${teeTime?.endTime}`
+          : teeTime
+            ? `Book Tee Time: ${teeTime.startTime} - ${teeTime.endTime}`
+            : 'Create Booking'}
       </DialogTitle>
       <DialogContent>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1 }}>
@@ -184,65 +530,68 @@ const BookingModal: React.FC<BookingModalProps> = ({
 
           <Divider />
 
-          {/* Main Member Selection */}
+          {/* Main Member Display (Fixed, Read-only) */}
           <Box>
             <Typography variant="subtitle2" gutterBottom>
-              Main Member <Typography component="span" color="error">*</Typography>
+              Main Member
             </Typography>
-            <Autocomplete
-              options={mainMembersData?.items || []}
-              getOptionLabel={(option) =>
-                `${option.firstName} ${option.lastName} (${option.memberCode})`
-              }
-              value={mainMember}
-              onChange={(_, newValue) => {
-                setMainMember(newValue);
-                // ✅ FIXED: Remove main member from additional members if it was there
-                if (newValue) {
-                  setAdditionalMembers((prev) =>
-                    prev.filter((m) => m.id !== newValue.id),
-                  );
-                } else {
-                  // If main member is cleared, ensure additional members don't contain it
-                  setAdditionalMembers((prev) =>
-                    prev.filter((m) => m.id !== null),
-                  );
-                }
-              }}
-              onInputChange={(_, newInputValue) => {
-                setMainMemberSearch(newInputValue);
-              }}
-              loading={mainMembersLoading}
-              renderInput={(params) => (
-                <TextField
-                  {...params}
-                  label="Select Main Member"
-                  placeholder="Search and select main member..."
-                  required
+            {mainMember && (
+              <Box
+                sx={{
+                  p: 2,
+                  bgcolor: 'action.hover',
+                  borderRadius: 1,
+                  border: '1px solid',
+                  borderColor: 'divider',
+                }}
+              >
+                <Typography variant="body1" fontWeight="medium">
+                  {mainMember.firstName} {mainMember.lastName}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Member Code: {mainMember.memberCode}
+                </Typography>
+                <Chip
+                  label="Fixed"
+                  size="small"
+                  color="primary"
+                  sx={{ mt: 1 }}
                 />
-              )}
-              disabled={!teeTime || teeTime.status === 'BLOCKED' || originalAvailableSlots === 0}
-            />
+              </Box>
+            )}
           </Box>
 
           {/* Additional Players */}
-          {/* 
-            🧪 REGRESSION TEST: Verify this flow works correctly:
-            1. Select main member ✅
-            2. Add player 1 ✅
-            3. Add player 2 ✅
-            4. Add player 3 ✅
-            5. Player count correct ✅
-            6. No field resets ✅
-            7. No crash ✅
-            8. "Maximum players reached" message shows ✅
-            9. Create booking works ✅
-          */}
           {mainMember && (
             <Box>
               <Typography variant="subtitle2" gutterBottom>
                 Additional Players (Optional)
               </Typography>
+              {(existingMemberIds && existingMemberIds.length > 0) || mainMember ? (
+                <Typography variant="caption" color="text.secondary" sx={{ mb: 1, display: 'block' }}>
+                  Note: {mainMember ? 'Main member is excluded. ' : ''}
+                  {existingMemberIds && existingMemberIds.length > 0 
+                    ? `${existingMemberIds.length} member(s) already booked in this slot are excluded.`
+                    : ''}
+                </Typography>
+              ) : null}
+              {duplicateAdditionalMembers.length > 0 && (
+                <Alert severity="error" sx={{ mb: 1 }}>
+                  ⚠️ The following members are already booked in this slot and cannot be added:
+                  <Box component="ul" sx={{ mt: 0.5, mb: 0, pl: 2 }}>
+                    {duplicateAdditionalMembers.map((m) => (
+                      <li key={m.id}>
+                        {m.firstName} {m.lastName} ({m.memberCode})
+                      </li>
+                    ))}
+                  </Box>
+                </Alert>
+              )}
+              {duplicateInCurrentBooking && (
+                <Alert severity="error" sx={{ mb: 1 }}>
+                  ⚠️ {duplicateInCurrentBooking.firstName} {duplicateInCurrentBooking.lastName} ({duplicateInCurrentBooking.memberCode}) is already in this booking and cannot be added again.
+                </Alert>
+              )}
               <Autocomplete
                 multiple
                 // ✅ FIXED: Fully controlled Autocomplete with stable options
@@ -250,23 +599,147 @@ const BookingModal: React.FC<BookingModalProps> = ({
                 value={additionalMembers} // Always an array, never null/undefined
                 // ✅ FIXED: Critical - equality check by ID to prevent MUI from losing selection
                 isOptionEqualToValue={(option, value) => option.id === value.id}
-                getOptionLabel={(option) =>
-                  `${option.firstName} ${option.lastName} (${option.memberCode})`
-                }
+                // ✅ REMOVED: filterOptions was causing issues with single selection
+                // The options are already filtered in additionalMembersOptions above
+                // Removing custom filterOptions to let MUI handle filtering naturally
+                getOptionLabel={(option) => {
+                  const isMainMember = option.id === mainMember?.id;
+                  const isExcluded = excludedMemberIdsSet.has(option.id);
+                  let suffix = '';
+                  if (isMainMember) {
+                    suffix = ' - Main member';
+                  } else if (isExcluded) {
+                    suffix = ' - Already booked';
+                  }
+                  return `${option.firstName} ${option.lastName} (${option.memberCode})${suffix}`;
+                }}
                 onChange={(_, newValue) => {
-                  // ✅ FIXED: Filter out main member before setting
-                  const filteredNewValue = newValue.filter(
-                    (m) => m.id !== mainMember?.id,
+                  console.log('🔍 onChange called:', {
+                    newValueLength: newValue.length,
+                    newValueIds: newValue.map(m => m.id),
+                    currentAdditionalMembersLength: additionalMembers.length,
+                    currentAdditionalMembersIds: additionalMembers.map(m => m.id),
+                  });
+                  
+                  // Clear any previous duplicate error
+                  setDuplicateInCurrentBooking(null);
+                  
+                  // ✅ FIXED: Filter out main member and excluded members before setting
+                  let filteredNewValue = newValue.filter(
+                    (m) => m.id !== mainMember?.id && !excludedMemberIdsSet.has(m.id),
                   );
                   
+                  console.log('🔍 After filtering:', {
+                    filteredLength: filteredNewValue.length,
+                    filteredIds: filteredNewValue.map(m => m.id),
+                  });
+                  
+                  // ✅ NEW: Check if any member being added is already in the current booking
+                  if (isEditMode && existingBooking) {
+                    const currentBookingPlayerIds = new Set(existingBooking.players.map(p => p.memberId));
+                    const currentSelectedIds = new Set(additionalMembers.map(m => m.id));
+                    
+                    // Find newly added members (in newValue but not in current additionalMembers)
+                    const newlyAddedMembers = filteredNewValue.filter(
+                      m => !currentSelectedIds.has(m.id)
+                    );
+                    
+                    // Check if any newly added member is already in the current booking
+                    const duplicateMember = newlyAddedMembers.find(m => currentBookingPlayerIds.has(m.id));
+                    
+                    if (duplicateMember) {
+                      console.log('🚫 Duplicate in current booking detected:', duplicateMember.id);
+                      // Member already exists in current booking - show error and prevent adding
+                      setDuplicateInCurrentBooking(duplicateMember);
+                      // Don't update the state, keep current selection
+                      return;
+                    }
+                  }
+                  
+                  // ✅ VALIDATE: Deduplicate by memberId (prevent same member appearing twice)
+                  // Use Map to keep first occurrence of each memberId
+                  // ✅ CRITICAL: Use member objects from options/state to ensure object reference consistency
+                  const uniqueMembersMap = new Map<number, Member>();
+                  
+                  // Create a lookup map of all available members (from options + current state)
+                  const allAvailableMembersMap = new Map<number, Member>();
+                  additionalMembersOptions.forEach(m => allAvailableMembersMap.set(m.id, m));
+                  additionalMembers.forEach(m => {
+                    if (!allAvailableMembersMap.has(m.id)) {
+                      allAvailableMembersMap.set(m.id, m);
+                    }
+                  });
+                  
+                  filteredNewValue.forEach((member) => {
+                    if (!uniqueMembersMap.has(member.id)) {
+                      // Use the member object from our lookup map if available, otherwise use the one from MUI
+                      const memberToUse = allAvailableMembersMap.get(member.id) || member;
+                      uniqueMembersMap.set(member.id, memberToUse);
+                    }
+                    // Silently deduplicate - if duplicate exists, keep first occurrence
+                  });
+                  
+                  filteredNewValue = Array.from(uniqueMembersMap.values());
+                  
+                  console.log('🔍 After deduplication:', {
+                    filteredLength: filteredNewValue.length,
+                    filteredIds: filteredNewValue.map(m => m.id),
+                  });
+                  
+                  // ✅ FIXED: Calculate max allowed based on current state
+                  // Need to recalculate here because maxAdditionalPlayers might be stale
+                  let currentMaxAdditional: number;
+                  if (isEditMode) {
+                    // Edit mode: Can have up to maxPlayers total
+                    currentMaxAdditional = Math.max(0, maxPlayers - 1);
+                  } else {
+                    // Create mode: Based on original available slots minus main member (if new)
+                    const mainMemberConsumesSlot = mainMember && !existingMemberIdSet.has(mainMember.id);
+                    currentMaxAdditional = Math.max(0, originalAvailableSlots - (mainMemberConsumesSlot ? 1 : 0));
+                  }
+                  
+                  console.log('🔍 Max check:', {
+                    filteredNewValueLength: filteredNewValue.length,
+                    currentMaxAdditional,
+                    currentAdditionalMembersLength: additionalMembers.length,
+                    willUpdate: filteredNewValue.length <= currentMaxAdditional || filteredNewValue.length < additionalMembers.length,
+                  });
+                  
                   // ✅ FIXED: Always allow removing members, restrict only when adding
-                  if (filteredNewValue.length <= maxAdditionalPlayers) {
+                  // Check if the new selection exceeds the maximum allowed additional players
+                  if (filteredNewValue.length <= currentMaxAdditional) {
+                    console.log('✅ Updating additionalMembers state:', filteredNewValue.map(m => ({ id: m.id, name: `${m.firstName} ${m.lastName}` })));
                     setAdditionalMembers(filteredNewValue);
                   } else if (filteredNewValue.length < additionalMembers.length) {
                     // Allow reducing the list even if it was over limit
+                    console.log('✅ Allowing reduction:', filteredNewValue.map(m => ({ id: m.id, name: `${m.firstName} ${m.lastName}` })));
                     setAdditionalMembers(filteredNewValue);
+                  } else {
+                    console.log('❌ NOT updating - exceeds limit:', {
+                      filteredLength: filteredNewValue.length,
+                      maxAllowed: currentMaxAdditional,
+                      currentLength: additionalMembers.length,
+                    });
                   }
-                  // If trying to add beyond limit, keep current selection (don't update)
+                  // If trying to add beyond limit or excluded member, keep current selection (don't update)
+                }}
+                isOptionDisabled={(option) => {
+                  // Disable main member (should never appear, but safety check)
+                  if (option.id === mainMember?.id) {
+                    return true;
+                  }
+                  // Disable members already booked in other bookings
+                  if (excludedMemberIdsSet.has(option.id)) {
+                    return true;
+                  }
+                  // In edit mode, disable members already in current booking
+                  if (isEditMode && currentBookingPlayerIds.has(option.id)) {
+                    return true;
+                  }
+                  // ✅ FIXED: Do NOT disable already selected members
+                  // MUI Autocomplete multiple mode needs selected options to be enabled
+                  // so they can be toggled off. The onChange handler will prevent duplicates.
+                  return false;
                 }}
                 onInputChange={(_, newInputValue) => {
                   setAdditionalMembersSearch(newInputValue);
@@ -280,14 +753,43 @@ const BookingModal: React.FC<BookingModalProps> = ({
                   />
                 )}
                 renderTags={(value, getTagProps) =>
-                  value.map((option, index) => (
-                    <Chip
-                      {...getTagProps({ index })}
-                      key={option.id}
-                      label={`${option.firstName} ${option.lastName}`}
-                    />
-                  ))
+                  value.map((option, index) => {
+                    const isDuplicate = existingMemberIdSet.has(option.id);
+                    return (
+                      <Chip
+                        {...getTagProps({ index })}
+                        key={option.id}
+                        label={`${option.firstName} ${option.lastName}`}
+                        color={isDuplicate ? 'error' : 'default'}
+                        onDelete={
+                          isDuplicate
+                            ? undefined
+                            : getTagProps({ index }).onDelete
+                        }
+                      />
+                    );
+                  })
                 }
+                renderOption={(props, option) => {
+                  const isMainMember = option.id === mainMember?.id;
+                  const isExcluded = excludedMemberIdsSet.has(option.id);
+                  return (
+                    <Box
+                      component="li"
+                      {...props}
+                      sx={{
+                        ...((isMainMember || isExcluded) && {
+                          opacity: 0.5,
+                          textDecoration: 'line-through',
+                        }),
+                      }}
+                    >
+                      {option.firstName} {option.lastName} ({option.memberCode})
+                      {isMainMember && ' - Main member'}
+                      {isExcluded && !isMainMember && ' - Already booked'}
+                    </Box>
+                  );
+                }}
                 // ✅ FIXED: Don't disable entire Autocomplete when max reached
                 // Only disable if tee time is blocked or no slots available originally
                 // User should still be able to remove players even at max
@@ -319,15 +821,54 @@ const BookingModal: React.FC<BookingModalProps> = ({
           />
 
           {/* Error Message */}
-          {createBookingMutation.isError && (
+          {hasError && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              <Typography variant="body2" fontWeight="medium">
+                Failed to {isEditMode ? 'update' : 'create'} booking
+              </Typography>
+              <Typography variant="body2" sx={{ mt: 0.5 }}>
+                {(() => {
+                  if (error instanceof Error) {
+                    return error.message;
+                  }
+                  if (typeof error === 'string') {
+                    return error;
+                  }
+                  return 'Please try again. Check the browser console for details.';
+                })()}
+              </Typography>
+            </Alert>
+          )}
+          {loadingBooking && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Loading booking details...
+            </Alert>
+          )}
+          {!mainMember && (
+            <Alert severity="error" sx={{ mb: 2 }}>
+              No main member selected. Please close this modal and select a member first.
+            </Alert>
+          )}
+          {!mainMember && (
             <Alert severity="error">
-              Failed to create booking. Please try again.
+              No main member selected. Please close this modal and select a member first.
             </Alert>
           )}
         </Box>
       </DialogContent>
       <DialogActions>
-        <Button onClick={handleClose} disabled={createBookingMutation.isPending}>
+        {isEditMode && (
+          <Button
+            onClick={() => setDeleteDialogOpen(true)}
+            color="error"
+            disabled={isPending || loadingBooking || cancelBookingMutation.isPending}
+            startIcon={cancelBookingMutation.isPending ? <CircularProgress size={16} /> : <DeleteIcon />}
+            sx={{ mr: 'auto' }}
+          >
+            {cancelBookingMutation.isPending ? 'Deleting...' : 'Delete Booking'}
+          </Button>
+        )}
+        <Button onClick={handleClose} disabled={isPending || loadingBooking || cancelBookingMutation.isPending}>
           Cancel
         </Button>
         <Button
@@ -337,17 +878,85 @@ const BookingModal: React.FC<BookingModalProps> = ({
             !teeTime ||
             teeTime.status === 'BLOCKED' ||
             !mainMember ||
-            createBookingMutation.isPending ||
-            originalAvailableSlots === 0 ||
-            selectedCount === 0
+            isPending ||
+            loadingBooking ||
+            cancelBookingMutation.isPending ||
+            (!isEditMode && originalAvailableSlots === 0) || // Only check slots for new bookings
+            duplicateAdditionalMembers.length > 0 ||
+            (!isEditMode && isMainMemberDuplicate) // Prevent duplicate main member only for new bookings
           }
           startIcon={
-            createBookingMutation.isPending ? <CircularProgress size={16} /> : null
+            isPending ? <CircularProgress size={16} /> : null
           }
         >
-          {createBookingMutation.isPending ? 'Creating...' : 'Create Booking'}
+          {isPending 
+            ? (isEditMode ? 'Updating...' : 'Creating...') 
+            : (isEditMode ? 'Update Booking' : 'Create Booking')}
         </Button>
       </DialogActions>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => !cancelBookingMutation.isPending && setDeleteDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Delete Booking</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete this booking? This action cannot be undone.
+          </Typography>
+          {existingBooking && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="body2" color="text.secondary">
+                <strong>Booking Details:</strong>
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Date: {dayjs(existingBooking.teeTime?.date).format('MMMM DD, YYYY')}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Time: {existingBooking.teeTime?.startTime}
+              </Typography>
+              {existingBooking.players && existingBooking.players.length > 0 && (
+                <Typography variant="body2" color="text.secondary">
+                  Main Member: {existingBooking.players.find(p => p.isMainPlayer)?.memberName || 'N/A'}
+                </Typography>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => setDeleteDialogOpen(false)}
+            disabled={cancelBookingMutation.isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={async () => {
+              if (!bookingId) return;
+              try {
+                await cancelBookingMutation.mutateAsync({
+                  id: bookingId,
+                  reason: 'Deleted from tee sheet',
+                });
+                setDeleteDialogOpen(false);
+                onSaved?.(); // Refresh the tee sheet
+                onClose(); // Close the modal
+              } catch (error) {
+                onError?.(error instanceof Error ? error : new Error('Failed to delete booking'));
+              }
+            }}
+            color="error"
+            variant="contained"
+            disabled={cancelBookingMutation.isPending}
+            startIcon={cancelBookingMutation.isPending ? <CircularProgress size={16} /> : <DeleteIcon />}
+          >
+            {cancelBookingMutation.isPending ? 'Deleting...' : 'Delete'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Dialog>
   );
 };

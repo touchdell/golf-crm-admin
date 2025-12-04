@@ -63,10 +63,10 @@ const MemberDetailPage: React.FC = () => {
 
   const getStatusColor = (status: BookingListItem['status']) => {
     switch (status) {
-      case 'CONFIRMED':
+      case 'BOOKED':
+        return 'primary';
+      case 'CHECKED_IN':
         return 'success';
-      case 'PENDING':
-        return 'warning';
       case 'CANCELLED':
         return 'error';
       case 'COMPLETED':
@@ -80,11 +80,11 @@ const MemberDetailPage: React.FC = () => {
 
   // Calculate stats
   const totalRounds = bookingsData?.items.filter(b => 
-    b.status === 'COMPLETED' || b.status === 'CONFIRMED'
+    b.status === 'COMPLETED' || b.status === 'CHECKED_IN'
   ).length || 0;
 
   const lastVisit = bookingsData?.items
-    .filter(b => b.status === 'COMPLETED' || b.status === 'CONFIRMED')
+    .filter(b => b.status === 'COMPLETED' || b.status === 'CHECKED_IN')
     .sort((a, b) => {
       const dateA = a.teeTimeDate || '';
       const dateB = b.teeTimeDate || '';

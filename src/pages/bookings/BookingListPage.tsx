@@ -18,10 +18,11 @@ import {
   Chip,
   CircularProgress,
   Alert,
+  Snackbar,
 } from '@mui/material';
 import { Search } from '@mui/icons-material';
 import dayjs from 'dayjs';
-import { useBookings } from '../../hooks/useBooking';
+import { useBookings, useUpdateBooking } from '../../hooks/useBooking';
 import type { BookingListItem } from '../../services/bookingService';
 import BookingDetailDrawer from '../../components/BookingDetailDrawer';
 
@@ -34,6 +35,10 @@ const BookingListPage: React.FC = () => {
   const [search, setSearch] = useState<string>('');
   const [selectedBookingId, setSelectedBookingId] = useState<number | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
+  const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error'>('success');
+  const updateBookingMutation = useUpdateBooking();
 
   const { data, isLoading, isError, error, refetch } = useBookings({
     page,
@@ -70,10 +75,10 @@ const BookingListPage: React.FC = () => {
 
   const getStatusColor = (status: BookingListItem['status']) => {
     switch (status) {
-      case 'CONFIRMED':
+      case 'BOOKED':
+        return 'primary';
+      case 'CHECKED_IN':
         return 'success';
-      case 'PENDING':
-        return 'warning';
       case 'CANCELLED':
         return 'error';
       case 'COMPLETED':
@@ -149,8 +154,8 @@ const BookingListPage: React.FC = () => {
               }}
             >
               <MenuItem value="">All</MenuItem>
-              <MenuItem value="PENDING">Pending</MenuItem>
-              <MenuItem value="CONFIRMED">Confirmed</MenuItem>
+              <MenuItem value="BOOKED">Booked</MenuItem>
+              <MenuItem value="CHECKED_IN">Checked In</MenuItem>
               <MenuItem value="COMPLETED">Completed</MenuItem>
               <MenuItem value="CANCELLED">Cancelled</MenuItem>
               <MenuItem value="NO_SHOW">No Show</MenuItem>
@@ -185,13 +190,14 @@ const BookingListPage: React.FC = () => {
                   <TableCell>Time</TableCell>
                   <TableCell>Member</TableCell>
                   <TableCell>Status</TableCell>
+                  <TableCell>Payment Status</TableCell>
                   <TableCell align="right">Total Amount</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
                 {!data || !data.items || data.items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} align="center" sx={{ py: 4 }}>
+                    <TableCell colSpan={6} align="center" sx={{ py: 4 }}>
                       <Typography color="text.secondary">
                         {!data ? 'No booking data available.' : 'No bookings found matching your criteria.'}
                       </Typography>
@@ -211,16 +217,64 @@ const BookingListPage: React.FC = () => {
                           : '-'}
                       </TableCell>
                       <TableCell>
-                        {booking.teeTimeStartTime && booking.teeTimeEndTime
-                          ? `${booking.teeTimeStartTime} - ${booking.teeTimeEndTime}`
+                        {booking.teeTimeStartTime
+                          ? booking.teeTimeEndTime
+                            ? `${booking.teeTimeStartTime} - ${booking.teeTimeEndTime}`
+                            : booking.teeTimeStartTime
                           : '-'}
                       </TableCell>
                       <TableCell>{booking.mainMemberName || '-'}</TableCell>
                       <TableCell>
-                        <Chip
-                          label={booking.status}
+                        <Select
+                          value={booking.status || 'BOOKED'}
                           size="small"
-                          color={getStatusColor(booking.status)}
+                          sx={{ minWidth: 120 }}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={async (e) => {
+                            const newStatus = e.target.value as BookingListItem['status'];
+                            if (newStatus === booking.status) return;
+                            
+                            try {
+                              await updateBookingMutation.mutateAsync({
+                                id: booking.id,
+                                payload: { status: newStatus },
+                              });
+                              setSnackbarMessage(`Booking status updated to ${newStatus} successfully!`);
+                              setSnackbarSeverity('success');
+                              setSnackbarOpen(true);
+                              refetch();
+                            } catch (error) {
+                              setSnackbarMessage('Failed to update booking status. Please try again.');
+                              setSnackbarSeverity('error');
+                              setSnackbarOpen(true);
+                            }
+                          }}
+                          disabled={updateBookingMutation.isPending}
+                          renderValue={(value) => {
+                            const statusValue = value || booking.status || 'BOOKED';
+                            return (
+                              <Chip
+                                label={statusValue}
+                                size="small"
+                                color={getStatusColor(statusValue as BookingListItem['status'])}
+                                sx={{ height: 24 }}
+                              />
+                            );
+                          }}
+                        >
+                          <MenuItem value="BOOKED">Booked</MenuItem>
+                          <MenuItem value="CHECKED_IN">Checked In</MenuItem>
+                          <MenuItem value="COMPLETED">Completed</MenuItem>
+                          <MenuItem value="NO_SHOW">No Show</MenuItem>
+                          <MenuItem value="CANCELLED">Cancelled</MenuItem>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          label={booking.paymentStatus || 'UNPAID'}
+                          size="small"
+                          color={booking.paymentStatus === 'PAID' ? 'success' : 'warning'}
+                          variant={booking.paymentStatus === 'PAID' ? 'filled' : 'outlined'}
                         />
                       </TableCell>
                       <TableCell align="right">
@@ -254,6 +308,22 @@ const BookingListPage: React.FC = () => {
         bookingId={selectedBookingId}
         onChanged={handleBookingChanged}
       />
+
+      {/* Snackbar for status update notifications */}
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={3000}
+        onClose={() => setSnackbarOpen(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert
+          onClose={() => setSnackbarOpen(false)}
+          severity={snackbarSeverity}
+          sx={{ width: '100%' }}
+        >
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

@@ -9,23 +9,42 @@ import {
   TextField,
   Snackbar,
   Alert,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  List,
+  ListItem,
+  ListItemText,
+  CircularProgress,
 } from '@mui/material';
-import { ArrowBack, ArrowForward } from '@mui/icons-material';
+import { ArrowBack, ArrowForward, Delete as DeleteIcon } from '@mui/icons-material';
 import dayjs from 'dayjs';
 import { useTeeTimes } from '../../hooks/useTeeTimes';
+import { useCancelBooking } from '../../hooks/useBooking';
 import type { TeeTime } from '../../services/teeTimeService';
+import type { Member } from '../../services/memberService';
 import BookingModal from '../../components/BookingModal';
+import MemberSelectionModal from '../../components/MemberSelectionModal';
 
 const TeeSheetPage: React.FC = () => {
   const [selectedDate, setSelectedDate] = useState(dayjs().format('YYYY-MM-DD'));
   const [courseId] = useState<number | undefined>(undefined); // extend later
   const [selectedTeeTime, setSelectedTeeTime] = useState<TeeTime | null>(null);
+  const [selectedMainMember, setSelectedMainMember] = useState<Member | null>(null);
+  const [selectedBookingId, setSelectedBookingId] = useState<number | null>(null);
+  const [isMemberSelectionModalOpen, setIsMemberSelectionModalOpen] = useState(false);
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
+  const [isBookingsListDialogOpen, setIsBookingsListDialogOpen] = useState(false);
+  const [bookingsToDelete, setBookingsToDelete] = useState<number | null>(null);
   const [snackbar, setSnackbar] = useState<{
     open: boolean;
     message: string;
     severity: 'success' | 'error';
   }>({ open: false, message: '', severity: 'success' });
+  
+  const cancelBookingMutation = useCancelBooking();
 
   const { data: teeTimes, isLoading, isError, refetch } = useTeeTimes(
     selectedDate,
@@ -44,10 +63,49 @@ const TeeSheetPage: React.FC = () => {
     setSelectedDate(e.target.value);
   };
 
-  const formatPlayers = (members?: { memberId: number; name: string }[]) => {
-    if (!members || members.length === 0) return '-';
-    if (members.length <= 2) return members.map((m) => m.name).join(', ');
-    return `${members[0].name} +${members.length - 1}`;
+  const hasDuplicateMainMembers = (teeTime: TeeTime | null | undefined): boolean => {
+    if (!teeTime || !teeTime.bookings || teeTime.bookings.length < 2) return false;
+    
+    const mainMemberIds = teeTime.bookings
+      .map((b) => b.mainMember?.memberId)
+      .filter((id): id is number => id !== undefined && id !== null);
+    
+    const uniqueIds = new Set(mainMemberIds);
+    return mainMemberIds.length !== uniqueIds.size;
+  };
+
+  const formatPlayers = (teeTime: TeeTime) => {
+    // If no bookings, show empty
+    if (!teeTime.bookings || teeTime.bookings.length === 0) {
+      return '-';
+    }
+
+    // Format each booking: "Main Member (Code) (X players)" or "Main Member (Code) + X others"
+    const bookingDisplays = teeTime.bookings.map((booking) => {
+      if (!booking.mainMember) {
+        // Use actual players array if available, otherwise fallback to playerCount
+        const totalPlayers = booking.players?.length || booking.playerCount || 0;
+        return `Booking #${booking.bookingId} (${totalPlayers} players)`;
+      }
+
+      const mainMemberName = booking.mainMember.name;
+      const memberCode = booking.mainMember.memberCode || '';
+      const codeDisplay = memberCode ? ` (${memberCode})` : '';
+      
+      // ✅ FIXED: Use actual players array if available (from booking_players table)
+      // Otherwise fallback to playerCount from bookings table
+      const totalPlayers = booking.players?.length || booking.playerCount || 0;
+
+      if (totalPlayers === 1) {
+        return `${mainMemberName}${codeDisplay} (1 player)`;
+      } else if (totalPlayers === 2) {
+        return `${mainMemberName}${codeDisplay} + 1 other`;
+      } else {
+        return `${mainMemberName}${codeDisplay} + ${totalPlayers - 1} others`;
+      }
+    });
+
+    return bookingDisplays.join(' | ');
   };
 
   const getStatusChip = (tt: TeeTime) => {
@@ -76,23 +134,108 @@ const TeeSheetPage: React.FC = () => {
 
   const handleSlotClick = (teeTime: TeeTime) => {
     if (teeTime.status === 'BLOCKED') return;
+
     setSelectedTeeTime(teeTime);
+
+    // Check if there are multiple bookings - if so, show bookings list dialog
+    if (teeTime.bookings && teeTime.bookings.length > 1) {
+      setIsBookingsListDialogOpen(true);
+      return;
+    }
+
+    // Check if there's exactly one booking - if so, open in edit mode
+    if (teeTime.bookings && teeTime.bookings.length === 1) {
+      const booking = teeTime.bookings[0];
+      const primary = booking.mainMember;
+      
+      if (primary) {
+        // Split name into first and last (best-effort)
+        const nameParts = primary.name.split(' ');
+        const firstName = nameParts[0] || primary.name;
+        const lastName = nameParts.slice(1).join(' ') || '';
+
+        const prefilledMember: Member = {
+          id: primary.memberId,
+          firstName,
+          lastName,
+          memberCode: primary.memberCode || '', // Use memberCode from booking if available
+          membershipType: '',
+          membershipStatus: 'ACTIVE',
+        };
+
+        setSelectedMainMember(prefilledMember);
+        setSelectedBookingId(booking.bookingId); // Set booking ID for edit mode
+        setIsBookingModalOpen(true);
+        return;
+      }
+    }
+
+    // If there are no bookings, use create mode
+    // If there are members but no bookings, prefill with first member for creating new booking
+    if (teeTime.members && teeTime.members.length > 0) {
+      const primary = teeTime.members[0];
+      // Split name into first and last (best-effort)
+      const nameParts = primary.name.split(' ');
+      const firstName = nameParts[0] || primary.name;
+      const lastName = nameParts.slice(1).join(' ') || '';
+
+      const prefilledMember: Member = {
+        id: primary.memberId,
+        firstName,
+        lastName,
+        memberCode: '', // Unknown here; can be filled by separate fetch if needed
+        membershipType: '',
+        membershipStatus: 'ACTIVE',
+      };
+
+      setSelectedMainMember(prefilledMember);
+      setSelectedBookingId(null); // Clear booking ID for create mode
+      setIsBookingModalOpen(true);
+      return;
+    }
+
+    // For new bookings (no existing member), open member selection modal first
+    setSelectedBookingId(null); // Clear booking ID
+    setIsMemberSelectionModalOpen(true);
+  };
+
+  const handleMemberSelected = (member: Member) => {
+    // Store the selected main member
+    setSelectedMainMember(member);
+    // Close member selection modal
+    setIsMemberSelectionModalOpen(false);
+    // Clear booking ID for new booking
+    setSelectedBookingId(null);
+    // Open booking modal with the fixed main member
     setIsBookingModalOpen(true);
+  };
+
+  const handleCloseMemberSelectionModal = () => {
+    // Just close the member selection modal.
+    // Do NOT clear selectedMainMember or selectedTeeTime here,
+    // so that when a member is selected, the booking modal receives it correctly.
+    setIsMemberSelectionModalOpen(false);
   };
 
   const handleCloseBookingModal = () => {
     setIsBookingModalOpen(false);
     setSelectedTeeTime(null);
+    setSelectedMainMember(null);
+    setSelectedBookingId(null);
   };
 
   const handleBookingSaved = async () => {
     // Refresh tee times after successful booking
     await refetch();
+    const isEdit = !!selectedBookingId;
     setSnackbar({
       open: true,
-      message: 'Booking created successfully!',
+      message: isEdit ? 'Booking updated successfully!' : 'Booking created successfully!',
       severity: 'success',
     });
+    // Reset selected member and booking ID after successful booking
+    setSelectedMainMember(null);
+    setSelectedBookingId(null);
   };
 
   const handleBookingError = (error: Error) => {
@@ -105,6 +248,39 @@ const TeeSheetPage: React.FC = () => {
 
   const handleSnackbarClose = () => {
     setSnackbar((prev) => ({ ...prev, open: false }));
+  };
+
+  const handleDeleteBooking = async (bookingId: number) => {
+    setBookingsToDelete(bookingId);
+    try {
+      await cancelBookingMutation.mutateAsync({
+        id: bookingId,
+        reason: 'Deleted from tee sheet',
+      });
+      setSnackbar({
+        open: true,
+        message: 'Booking deleted successfully!',
+        severity: 'success',
+      });
+      await refetch();
+      setBookingsToDelete(null);
+      // If no more bookings, close the dialog
+      if (selectedTeeTime && selectedTeeTime.bookings && selectedTeeTime.bookings.length <= 1) {
+        setIsBookingsListDialogOpen(false);
+      }
+    } catch (error) {
+      setSnackbar({
+        open: true,
+        message: error instanceof Error ? error.message : 'Failed to delete booking. Please try again.',
+        severity: 'error',
+      });
+      setBookingsToDelete(null);
+    }
+  };
+
+  const handleCloseBookingsListDialog = () => {
+    setIsBookingsListDialogOpen(false);
+    setSelectedTeeTime(null);
   };
 
   return (
@@ -192,12 +368,17 @@ const TeeSheetPage: React.FC = () => {
                       </Box>
                       <Box sx={{ flex: '1 1 25%' }}>{getStatusChip(tt)}</Box>
                       <Box sx={{ flex: '1 1 25%' }}>
-                        <Typography variant="body2">
-                          {formatPlayers(tt.members)}
+                        <Typography variant="body2" color={hasDuplicateMainMembers(tt) ? 'error' : 'inherit'}>
+                          {formatPlayers(tt)}
                         </Typography>
+                        {hasDuplicateMainMembers(tt) && (
+                          <Typography variant="caption" color="error" sx={{ display: 'block', mt: 0.5 }}>
+                            ⚠️ Duplicate main members detected
+                          </Typography>
+                        )}
                       </Box>
                       <Box sx={{ flex: '1 1 25%' }}>
-                        {tt.bookingStatus && tt.bookingStatus !== 'CONFIRMED' && (
+                        {tt.bookingStatus && tt.bookingStatus !== 'BOOKED' && (
                           <Tooltip title={`Booking status: ${tt.bookingStatus}`}>
                             <Chip
                               label={tt.bookingStatus}
@@ -216,13 +397,128 @@ const TeeSheetPage: React.FC = () => {
         </Box>
       </Paper>
 
+      {/* Member Selection Modal - Opens first when slot is clicked */}
+      <MemberSelectionModal
+        open={isMemberSelectionModalOpen}
+        onClose={handleCloseMemberSelectionModal}
+        onMemberSelected={handleMemberSelected}
+        title="Select Main Member for Booking"
+        excludedMemberIds={selectedTeeTime?.allMainMemberIds ?? []}
+      />
+
+      {/* Booking Modal - Opens after member is selected or when editing existing booking */}
       <BookingModal
-        open={isBookingModalOpen}
+        open={isBookingModalOpen && !!selectedMainMember}
         onClose={handleCloseBookingModal}
         teeTime={selectedTeeTime}
+        mainMember={selectedMainMember}
+        bookingId={selectedBookingId} // Pass booking ID for edit mode
+        // Pass all already-booked member IDs for this tee time so they
+        // cannot be added again to the same group (same slot).
+        existingMemberIds={
+          // ✅ FIXED: Include ALL main member IDs from ALL bookings in this slot
+          // This prevents adding a member who is already a main member in another booking
+          // In edit mode, exclude current booking's players from this list
+          selectedTeeTime?.allMainMemberIds?.filter(id => {
+            // If editing, exclude current booking's main member from exclusion list
+            if (selectedBookingId && selectedTeeTime?.bookings) {
+              const currentBooking = selectedTeeTime.bookings.find(b => b.bookingId === selectedBookingId);
+              return currentBooking?.mainMember?.memberId !== id;
+            }
+            return true;
+          }) ?? []
+        }
         onSaved={handleBookingSaved}
         onError={handleBookingError}
       />
+
+      {/* Bookings List Dialog - Shows when multiple bookings exist */}
+      <Dialog
+        open={isBookingsListDialogOpen}
+        onClose={handleCloseBookingsListDialog}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>
+          Bookings for {selectedTeeTime?.startTime} - {selectedTeeTime?.endTime}
+          {selectedTeeTime && hasDuplicateMainMembers(selectedTeeTime) && (
+            <Alert severity="warning" sx={{ mt: 1 }}>
+              ⚠️ Duplicate main members detected
+            </Alert>
+          )}
+        </DialogTitle>
+        <DialogContent>
+          {selectedTeeTime?.bookings && selectedTeeTime.bookings.length > 0 ? (
+            <List>
+              {selectedTeeTime.bookings.map((booking) => {
+                const totalPlayers = booking.players?.length || booking.playerCount || 0;
+                const mainMemberName = booking.mainMember?.name || 'Unknown';
+                const memberCode = booking.mainMember?.memberCode || '';
+                const codeDisplay = memberCode ? ` (${memberCode})` : '';
+                
+                return (
+                  <ListItem
+                    key={booking.bookingId}
+                    sx={{
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      mb: 1,
+                      bgcolor: 'background.paper',
+                    }}
+                    secondaryAction={
+                      <IconButton
+                        edge="end"
+                        color="error"
+                        onClick={() => handleDeleteBooking(booking.bookingId)}
+                        disabled={cancelBookingMutation.isPending && bookingsToDelete === booking.bookingId}
+                      >
+                        {cancelBookingMutation.isPending && bookingsToDelete === booking.bookingId ? (
+                          <CircularProgress size={20} />
+                        ) : (
+                          <DeleteIcon />
+                        )}
+                      </IconButton>
+                    }
+                  >
+                    <ListItemText
+                      primary={
+                        <Typography variant="body1" fontWeight="medium">
+                          {mainMemberName}{codeDisplay}
+                        </Typography>
+                      }
+                      secondary={
+                        <Box>
+                          <Typography variant="body2" color="text.secondary">
+                            Booking #{booking.bookingId} • {totalPlayers} {totalPlayers === 1 ? 'player' : 'players'}
+                          </Typography>
+                          <Chip
+                            label={booking.bookingStatus}
+                            size="small"
+                            color={
+                              booking.bookingStatus === 'BOOKED'
+                                ? 'primary'
+                                : booking.bookingStatus === 'CHECKED_IN'
+                                ? 'success'
+                                : 'default'
+                            }
+                            sx={{ mt: 0.5 }}
+                          />
+                        </Box>
+                      }
+                    />
+                  </ListItem>
+                );
+              })}
+            </List>
+          ) : (
+            <Typography>No bookings found.</Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseBookingsListDialog}>Close</Button>
+        </DialogActions>
+      </Dialog>
 
       <Snackbar
         open={snackbar.open}
